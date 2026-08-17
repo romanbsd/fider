@@ -145,6 +145,15 @@ type config struct {
 		Message string `env:"MAINTENANCE_MESSAGE"`
 		Until   string `env:"MAINTENANCE_UNTIL"`
 	}
+	Widget struct {
+		Enabled   bool `env:"WIDGET_ENABLED,default=true"`
+		RateLimit int  `env:"WIDGET_RATE_LIMIT,default=120,strict"`
+		IdToken   struct {
+			JWKSURL  string `env:"WIDGET_IDTOKEN_JWKS_URL"`
+			Issuer   string `env:"WIDGET_IDTOKEN_ISSUER"`
+			ClientID string `env:"WIDGET_IDTOKEN_CLIENT_ID"`
+		}
+	}
 	Webhook struct {
 		DisableOnFailure bool `env:"WEBHOOK_DISABLE_ON_FAILURE,default=true"`
 	}
