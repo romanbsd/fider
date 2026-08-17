@@ -20,11 +20,10 @@ import (
 )
 
 var (
-	// widgetRateLimiter is the per-tenant ceiling for all widget traffic
+	// widgetRateLimiter uses namespaced keys for the per-tenant ceiling and the
+	// sign-in client buckets. One limiter keeps lifecycle and configuration in
+	// one place while the namespaces keep those budgets independent.
 	widgetRateLimiter = ratelimit.New(env.Config.Widget.RateLimit, time.Minute)
-	// widgetClientRateLimiter throttles unauthenticated widget requests per
-	// client so a single client cannot exhaust a tenant's budget
-	widgetClientRateLimiter = ratelimit.New(env.Config.Widget.RateLimit, time.Minute)
 )
 
 // WidgetRateLimit throttles widget requests per tenant. Unauthenticated requests
@@ -38,7 +37,7 @@ func WidgetRateLimit() web.MiddlewareFunc {
 				return next(c)
 			}
 
-			if !widgetRateLimiter.Allow(fmt.Sprintf("%d", tenant.ID)) {
+			if !widgetRateLimiter.Allow(fmt.Sprintf("tenant:%d", tenant.ID)) {
 				return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 			}
 
@@ -47,8 +46,8 @@ func WidgetRateLimit() web.MiddlewareFunc {
 			// true here yet); keep a per-client limit on top of the tenant ceiling
 			// so one client cannot starve it.
 			if c.Request.URL.Path == "/widget/signin" {
-				clientKey := fmt.Sprintf("%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr(), c.Request.GetHeader("X-Forwarded-For")))
-				if !widgetClientRateLimiter.Allow(clientKey) {
+				clientKey := fmt.Sprintf("signin:%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr(), c.Request.GetHeader("X-Forwarded-For")))
+				if !widgetRateLimiter.Allow(clientKey) {
 					return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 				}
 			}
@@ -144,7 +143,7 @@ func authenticateWidget(c *web.Context, rawToken, udid string) (*entity.User, er
 }
 
 func authenticateMobile(c *web.Context, token string, next web.HandlerFunc) error {
-	claims, err := jwt.DecodeFiderClaims(token)
+	claims, err := jwt.DecodeWidgetClaims(token)
 	if err != nil || claims.Origin != jwt.FiderClaimsOriginAPI {
 		return c.Unauthorized()
 	}

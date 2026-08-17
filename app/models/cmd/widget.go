@@ -15,9 +15,12 @@ type RevokeWidgetToken struct {
 	TokenID int
 }
 
-// UpdateWidgetTokenLastUsed marks a widget token as recently used
+// UpdateWidgetTokenLastUsed marks a widget token as recently used. Result is
+// set only when the token exists and is not revoked; otherwise the command
+// fails with app.ErrNotFound.
 type UpdateWidgetTokenLastUsed struct {
-	Hash string
+	Hash   string
+	Result *entity.WidgetToken
 }
 
 // RegisterDeviceUser ensures a device user exists for the given device hash.

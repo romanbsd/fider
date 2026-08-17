@@ -39,20 +39,21 @@ func FindUserByProviderOrEmail(c *web.Context, provider, uid, email string) (*en
 	return nil, nil
 }
 
-// RegisterUserByProvider links a user authenticated by an identity provider to
-// Fider. When the user does not exist yet (by provider UID, then by email) a new
-// Visitor user is created; otherwise the provider is attached to the existing
-// user. Returns the linked user.
+// RequireProviderAdmission applies the shared private-tenant admission rule.
+// Existing identities may sign in; new identities require the caller's trusted
+// provider admission decision.
+func RequireProviderAdmission(tenant *entity.Tenant, existing *entity.User, trusted bool) error {
+	if tenant.IsPrivate && existing == nil && !trusted {
+		return errors.New("You are not invited to this site")
+	}
+	return nil
+}
+
+// RegisterUserByProvider links an already-resolved identity-provider user to
+// Fider. Callers must use FindUserByProviderOrEmail first, which avoids
+// repeating the provider/email lookup after authorization is decided.
 func RegisterUserByProvider(c *web.Context, tenant *entity.Tenant, existing *entity.User, provider, uid, name, email string) (*entity.User, error) {
 	user := existing
-	if user == nil {
-		byProvider, err := FindUserByProviderOrEmail(c, provider, uid, email)
-		if err != nil {
-			return nil, err
-		}
-		user = byProvider
-	}
-
 	if user == nil {
 		user = &entity.User{
 			Tenant:    tenant,

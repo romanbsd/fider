@@ -18,16 +18,10 @@ func DeviceHash(udid string) string {
 }
 
 // Validate checks that rawToken matches an active widget token of the current
-// tenant and marks it as recently used. It returns an error when the token is
-// not valid or the usage update fails. In case the last usage bookkeeping
-// starts failing, tokens are still validated but last_used_at may go stale.
+// tenant and marks it as recently used in the same round trip (an UPDATE ...
+// RETURNING), returning app.ErrNotFound when no active token matches the hash.
 func Validate(c *web.Context, rawToken string) error {
 	hash := entity.HashWidgetToken(rawToken)
-
-	if err := bus.Dispatch(c, &query.GetWidgetTokenByHash{Hash: hash}); err != nil {
-		return err
-	}
-
 	return bus.Dispatch(c, &cmd.UpdateWidgetTokenLastUsed{Hash: hash})
 }
 
@@ -35,7 +29,7 @@ func Validate(c *web.Context, rawToken string) error {
 // from is still active. This makes widget-token revocation retroactively
 // invalidate already-issued device JWTs. Returns nil when the claims carry no
 // widget token (real-user sessions are unaffected).
-func ValidateSession(c *web.Context, claims *jwt.FiderClaims) error {
+func ValidateSession(c *web.Context, claims *jwt.WidgetClaims) error {
 	if claims.WidgetTokenHash == "" {
 		return nil
 	}

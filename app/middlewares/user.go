@@ -80,49 +80,11 @@ func User() web.MiddlewareFunc {
 				}
 			} else if c.Request.IsAPI() {
 				if bearer, err := web.BearerToken(c.Request.GetHeader("Authorization")); err == nil {
-					// Mobile clients authenticate with the API JWT issued by
-					// /widget/signin. A Web-origin token (UI session) is never
-					// accepted as a bearer credential.
-					if claims, err := jwt.DecodeFiderClaims(bearer); err == nil && claims.Origin == jwt.FiderClaimsOriginAPI {
-						var ok bool
-						user, ok = resolveAPIClaimsUser(c, claims)
-						if !ok {
-							return c.JSON(401, web.Map{})
-						}
-					} else {
-						getUserByAPIKey := &query.GetUserByAPIKey{APIKey: bearer}
-						err = bus.Dispatch(c, getUserByAPIKey)
-						if err != nil {
-							if errors.Cause(err) == app.ErrNotFound {
-								return c.HandleValidation(validate.Failed("API Key is invalid"))
-							}
-							return err
-						}
-						user = getUserByAPIKey.Result
-
-						if !user.IsCollaborator() {
-							return c.HandleValidation(validate.Failed("API Key is invalid"))
-						}
-
-						if impersonateUserIDStr := c.Request.GetHeader("X-Fider-UserID"); impersonateUserIDStr != "" {
-							if !user.IsAdministrator() {
-								return c.HandleValidation(validate.Failed("Only Administrators are allowed to impersonate another user"))
-							}
-							impersonateUserID, err := strconv.Atoi(impersonateUserIDStr)
-							if err != nil {
-								return c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
-							}
-							userByImpersonateID := &query.GetUserByID{UserID: impersonateUserID, TenantID: user.Tenant.ID}
-							err = bus.Dispatch(c, userByImpersonateID)
-							user = userByImpersonateID.Result
-							if err != nil {
-								if errors.Cause(err) == app.ErrNotFound {
-									return c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
-								}
-								return err
-							}
-						}
+					resolved, handled, err := resolveBearerUser(c, bearer)
+					if handled {
+						return err
 					}
+					user = resolved
 				}
 			}
 
@@ -169,24 +131,80 @@ func findUserByClaims(c *web.Context, claims *jwt.FiderClaims) (*entity.User, er
 	return byID.Result, nil
 }
 
+// resolveBearerUser authenticates an API request's bearer token, accepting
+// either a mobile/widget JWT or a collaborator API key (optionally
+// impersonating another user via X-Fider-UserID). handled reports whether the
+// caller must stop and return err immediately without calling next() — err
+// may be nil in that case, since a response can already have been written
+// successfully (c.JSON/c.HandleValidation return nil on success).
+func resolveBearerUser(c *web.Context, bearer string) (*entity.User, bool, error) {
+	if claims, err := jwt.DecodeWidgetClaims(bearer); err == nil && claims.Origin == jwt.FiderClaimsOriginAPI {
+		user, ok := resolveAPIClaimsUser(c, claims)
+		if !ok {
+			return nil, true, c.JSON(401, web.Map{})
+		}
+		return user, false, nil
+	}
+	return resolveAPIKeyUser(c, bearer)
+}
+
+func resolveAPIKeyUser(c *web.Context, apiKey string) (*entity.User, bool, error) {
+	getUserByAPIKey := &query.GetUserByAPIKey{APIKey: apiKey}
+	if err := bus.Dispatch(c, getUserByAPIKey); err != nil {
+		if errors.Cause(err) == app.ErrNotFound {
+			return nil, true, c.HandleValidation(validate.Failed("API Key is invalid"))
+		}
+		return nil, true, err
+	}
+	user := getUserByAPIKey.Result
+
+	if !user.IsCollaborator() {
+		return nil, true, c.HandleValidation(validate.Failed("API Key is invalid"))
+	}
+
+	impersonateUserIDStr := c.Request.GetHeader("X-Fider-UserID")
+	if impersonateUserIDStr == "" {
+		return user, false, nil
+	}
+	return resolveImpersonatedUser(c, user, impersonateUserIDStr)
+}
+
+func resolveImpersonatedUser(c *web.Context, user *entity.User, impersonateUserIDStr string) (*entity.User, bool, error) {
+	if !user.IsAdministrator() {
+		return nil, true, c.HandleValidation(validate.Failed("Only Administrators are allowed to impersonate another user"))
+	}
+	impersonateUserID, err := strconv.Atoi(impersonateUserIDStr)
+	if err != nil {
+		return nil, true, c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
+	}
+	userByImpersonateID := &query.GetUserByID{UserID: impersonateUserID, TenantID: user.Tenant.ID}
+	if err := bus.Dispatch(c, userByImpersonateID); err != nil {
+		if errors.Cause(err) == app.ErrNotFound {
+			return nil, true, c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
+		}
+		return nil, true, err
+	}
+	return userByImpersonateID.Result, false, nil
+}
+
 // resolveAPIClaimsUser validates a Fider JWT issued through the mobile/widget API
 // against the current tenant: the user must exist in the tenant, its security
 // stamp must match, it must not be blocked, and the widget token the JWT was
 // issued from (if any) must still be active. Returns the tenant-scoped user, or
 // (nil, false) when the token is no longer usable.
-func resolveAPIClaimsUser(c *web.Context, claims *jwt.FiderClaims) (*entity.User, bool) {
-	user, err := findUserByClaims(c, claims)
+func resolveAPIClaimsUser(c *web.Context, claims *jwt.WidgetClaims) (*entity.User, bool) {
+	user, err := findUserByClaims(c, &claims.FiderClaims)
 	if err != nil || user == nil {
 		return nil, false
 	}
 	if claims.SecurityStamp != "" && user.SecurityStamp != claims.SecurityStamp {
 		return nil, false
 	}
-	if widgettoken.ValidateSession(c, claims) != nil {
-		// the widget token this JWT was issued from has been revoked
+	if user.Status == enum.UserBlocked {
 		return nil, false
 	}
-	if user.Status == enum.UserBlocked {
+	if widgettoken.ValidateSession(c, claims) != nil {
+		// the widget token this JWT was issued from has been revoked
 		return nil, false
 	}
 	return user, true

@@ -68,16 +68,18 @@ func WidgetSignIn() web.HandlerFunc {
 			widgetHash = entity.HashWidgetToken(input.Token)
 		}
 
-		token, err := jwt.Encode(jwt.FiderClaims{
-			UserID:          user.ID,
-			UserName:        user.Name,
-			UserEmail:       user.Email,
-			Origin:          jwt.FiderClaimsOriginAPI,
-			SecurityStamp:   user.SecurityStamp,
-			WidgetTokenHash: widgetHash,
-			Metadata: jwt.Metadata{
-				ExpiresAt: jwt.Time(time.Now().Add(365 * 24 * time.Hour)),
+		token, err := jwt.Encode(jwt.WidgetClaims{
+			FiderClaims: jwt.FiderClaims{
+				UserID:        user.ID,
+				UserName:      user.Name,
+				UserEmail:     user.Email,
+				Origin:        jwt.FiderClaimsOriginAPI,
+				SecurityStamp: user.SecurityStamp,
+				Metadata: jwt.Metadata{
+					ExpiresAt: jwt.Time(time.Now().Add(365 * 24 * time.Hour)),
+				},
 			},
+			WidgetTokenHash: widgetHash,
 		})
 		if err != nil {
 			return c.Failure(err)
@@ -129,20 +131,14 @@ func signInByIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {
 
 	const provider = "idtoken"
 
-	// Private tenants reject unknown identities unless admission was granted
-	// through the normal invite flow. Existing users always sign in.
-	if c.Tenant().IsPrivate {
-		existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UserID, claims.Email)
-		if err != nil {
-			return nil, err
-		}
-		if existing == nil {
-			return nil, errors.New("You are not invited to this site")
-		}
-		return handlers.RegisterUserByProvider(c, c.Tenant(), existing, provider, claims.UserID, claims.Name, claims.Email)
+	existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UserID, claims.Email)
+	if err != nil {
+		return nil, err
 	}
-
-	return handlers.RegisterUserByProvider(c, c.Tenant(), nil, provider, claims.UserID, claims.Name, claims.Email)
+	if err := handlers.RequireProviderAdmission(c.Tenant(), existing, false); err != nil {
+		return nil, err
+	}
+	return handlers.RegisterUserByProvider(c, c.Tenant(), existing, provider, claims.UserID, claims.Name, claims.Email)
 }
 
 type widgetTokenInput struct {

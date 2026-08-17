@@ -21,13 +21,10 @@ func TestValidateToken_Valid(t *testing.T) {
 	RegisterT(t)
 
 	touched := false
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		Expect(q.Hash).Equals(entity.HashWidgetToken("raw-token"))
-		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
-		return nil
-	})
 	bus.AddHandler(func(ctx context.Context, c *cmd.UpdateWidgetTokenLastUsed) error {
+		Expect(c.Hash).Equals(entity.HashWidgetToken("raw-token"))
 		touched = true
+		c.Result = &entity.WidgetToken{ID: 1, Hash: c.Hash}
 		return nil
 	})
 
@@ -46,7 +43,7 @@ func TestValidateToken_Valid(t *testing.T) {
 func TestValidateToken_Invalid(t *testing.T) {
 	RegisterT(t)
 
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+	bus.AddHandler(func(ctx context.Context, c *cmd.UpdateWidgetTokenLastUsed) error {
 		return app.ErrNotFound
 	})
 
@@ -64,10 +61,6 @@ func TestValidateToken_Invalid(t *testing.T) {
 func TestValidateToken_LastUsedFailure(t *testing.T) {
 	RegisterT(t)
 
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		q.Result = &entity.WidgetToken{ID: 1, Hash: entity.HashWidgetToken("raw-token")}
-		return nil
-	})
 	bus.AddHandler(func(ctx context.Context, c *cmd.UpdateWidgetTokenLastUsed) error {
 		return errors.New("failed to update last used")
 	})
@@ -100,7 +93,7 @@ func TestValidateSession(t *testing.T) {
 	server.OnTenant(mock.DemoTenant)
 	var sessionErr error
 	_, _ = server.Execute(func(c *web.Context) error {
-		sessionErr = widgettoken.ValidateSession(c, &jwt.FiderClaims{})
+		sessionErr = widgettoken.ValidateSession(c, &jwt.WidgetClaims{})
 		return nil
 	})
 	Expect(sessionErr).IsNil()
@@ -111,7 +104,7 @@ func TestValidateSession(t *testing.T) {
 		return nil
 	})
 	_, _ = server.Execute(func(c *web.Context) error {
-		sessionErr = widgettoken.ValidateSession(c, &jwt.FiderClaims{WidgetTokenHash: "active-hash"})
+		sessionErr = widgettoken.ValidateSession(c, &jwt.WidgetClaims{WidgetTokenHash: "active-hash"})
 		return nil
 	})
 	Expect(sessionErr).IsNil()
@@ -122,7 +115,7 @@ func TestValidateSession(t *testing.T) {
 		return app.ErrNotFound
 	})
 	_, _ = server.Execute(func(c *web.Context) error {
-		sessionErr = widgettoken.ValidateSession(c, &jwt.FiderClaims{WidgetTokenHash: "revoked-hash"})
+		sessionErr = widgettoken.ValidateSession(c, &jwt.WidgetClaims{WidgetTokenHash: "revoked-hash"})
 		return nil
 	})
 	Expect(sessionErr).IsNotNil()

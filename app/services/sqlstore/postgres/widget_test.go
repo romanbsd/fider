@@ -71,6 +71,7 @@ func TestWidgetTokenStorage_LastUsed(t *testing.T) {
 	touch := &cmd.UpdateWidgetTokenLastUsed{Hash: entity.HashWidgetToken(create.Result.RawToken)}
 	err = bus.Dispatch(demoTenantCtx, touch)
 	Expect(err).IsNil()
+	Expect(touch.Result.LastUsedAt).IsNotNil()
 
 	getByHash := &query.GetWidgetTokenByHash{Hash: entity.HashWidgetToken(create.Result.RawToken)}
 	err = bus.Dispatch(demoTenantCtx, getByHash)

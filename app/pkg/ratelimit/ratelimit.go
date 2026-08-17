@@ -62,6 +62,11 @@ func (l *Limiter) Allow(key string) bool {
 
 // sweep drops keys whose most recent request has left the window, so tenants or
 // clients that stopped sending requests do not retain state indefinitely.
+// ponytail: full O(n) scan under l.mu every sweepInterval calls. Key set is
+// bounded (active tenants + per-signin-client IPs within one window), so this
+// is a sub-millisecond amortized cost; an LRU/heap structure to make eviction
+// O(k) would add real complexity for no measured benefit. Revisit if profiling
+// shows contention.
 func (l *Limiter) sweep() {
 	now := l.now()
 	cutoff := now.Add(-l.window)

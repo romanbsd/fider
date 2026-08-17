@@ -497,11 +497,13 @@ func TestUser_UIOriginJWT_NotAcceptedAsAPI(t *testing.T) {
 func TestUser_RevokedWidgetToken_JWTRejected(t *testing.T) {
 	RegisterT(t)
 
-	token, err := jwt.Encode(jwt.FiderClaims{
-		UserID:          mock.JonSnow.ID,
-		UserName:        mock.JonSnow.Name,
-		Origin:          jwt.FiderClaimsOriginAPI,
-		SecurityStamp:   mock.JonSnow.SecurityStamp,
+	token, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:        mock.JonSnow.ID,
+			UserName:      mock.JonSnow.Name,
+			Origin:        jwt.FiderClaimsOriginAPI,
+			SecurityStamp: mock.JonSnow.SecurityStamp,
+		},
 		WidgetTokenHash: "revoked-token-hash",
 	})
 	Expect(err).IsNil()
@@ -831,4 +833,3 @@ func TestUser_SecurityStamp_EmptyInToken(t *testing.T) {
 	Expect(status).Equals(http.StatusOK)
 	Expect(response.Body.String()).Equals("Jon Snow")
 }
-

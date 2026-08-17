@@ -140,22 +140,34 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 var concurrentIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
 
 // isConcurrentMigration reports whether any statement of the script is a
-// CREATE INDEX CONCURRENTLY, ignoring leading line comments. Detection runs on
+// CREATE INDEX CONCURRENTLY, ignoring leading SQL comments. Detection runs on
 // the split statements so the word CONCURRENTLY inside comments or quoted
 // identifiers cannot trigger the non-transactional path.
 func isConcurrentMigration(statements []string) bool {
 	for _, s := range statements {
 		cleaned := strings.TrimSpace(s)
 
-		// strip leading line comments
-		for strings.HasPrefix(cleaned, "--") {
-			end := strings.IndexByte(cleaned, '\n')
-			if end == -1 {
-				cleaned = ""
-				break
+		for {
+			switch {
+			case strings.HasPrefix(cleaned, "--"):
+				end := strings.IndexByte(cleaned, '\n')
+				if end == -1 {
+					cleaned = ""
+				} else {
+					cleaned = strings.TrimSpace(cleaned[end+1:])
+				}
+			case strings.HasPrefix(cleaned, "/*"):
+				end := strings.Index(cleaned[2:], "*/")
+				if end == -1 {
+					cleaned = ""
+				} else {
+					cleaned = strings.TrimSpace(cleaned[end+4:])
+				}
+			default:
+				goto commentsStripped
 			}
-			cleaned = strings.TrimSpace(cleaned[end+1:])
 		}
+	commentsStripped:
 
 		if concurrentIndexRegex.MatchString(cleaned) {
 			return true
@@ -165,7 +177,7 @@ func isConcurrentMigration(statements []string) bool {
 }
 
 // splitStatements splits a SQL script into individual statements, honouring
-// single-quoted literals and dollar-quoted strings, so statements can be run
+// single-quoted literals, dollar-quoted strings, and SQL comments, so statements can be run
 // outside a transaction (e.g. CREATE INDEX CONCURRENTLY).
 func splitStatements(script string) []string {
 	var (
@@ -213,6 +225,17 @@ func splitStatements(script string) []string {
 					i = len(script)
 				} else {
 					i += 2 + end + 1
+				}
+			} else {
+				i++
+			}
+		case '/':
+			if i+1 < len(script) && script[i+1] == '*' {
+				end := strings.Index(script[i+2:], "*/")
+				if end == -1 {
+					i = len(script)
+				} else {
+					i += end + 4
 				}
 			} else {
 				i++

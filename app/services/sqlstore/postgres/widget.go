@@ -58,11 +58,15 @@ func revokeWidgetToken(ctx context.Context, c *cmd.RevokeWidgetToken) error {
 
 func updateWidgetTokenLastUsed(ctx context.Context, c *cmd.UpdateWidgetTokenLastUsed) error {
 	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, user *entity.User) error {
-		if _, err := trx.Execute(
-			"UPDATE widget_tokens SET last_used_at = $3 WHERE tenant_id = $1 AND token_hash = $2 AND revoked_at IS NULL",
+		var token dbEntities.WidgetToken
+		if err := trx.Get(&token, `
+			UPDATE widget_tokens SET last_used_at = $3
+			WHERE tenant_id = $1 AND token_hash = $2 AND revoked_at IS NULL
+			RETURNING id, label, token_hash, created_at, last_used_at, revoked_at`,
 			tenant.ID, c.Hash, time.Now()); err != nil {
 			return errors.Wrap(err, "failed to update widget token last used")
 		}
+		c.Result = token.ToModel()
 		return nil
 	})
 }

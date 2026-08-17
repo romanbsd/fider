@@ -2,9 +2,7 @@ package handlers
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,6 +17,7 @@ import (
 
 	"github.com/getfider/fider/app/models/query"
 	"github.com/getfider/fider/app/pkg/bus"
+	"github.com/getfider/fider/app/pkg/crypto"
 
 	"github.com/getfider/fider/app/pkg/env"
 	"github.com/getfider/fider/app/pkg/errors"
@@ -121,8 +120,7 @@ func isValidOAuthHandoff(c *web.Context, provider, handoff string) bool {
 // hashSessionID hashes a session ID so the handoff token can be bound to a browser session
 // without the session ID itself travelling through URLs, logs and referrers.
 func hashSessionID(sessionID string) string {
-	sum := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(sum[:])
+	return crypto.SHA256(sessionID)
 }
 
 // sanitiseOAuthRedirect reduces a caller supplied redirect to a path on the current tenant.
@@ -194,9 +192,9 @@ func OAuthEcho() web.HandlerFunc {
 			Page:  "OAuthEcho/OAuthEcho.page",
 			Title: "OAuth Test Page",
 			Data: web.Map{
-				"body":                 rawProfile.Result,
-				"profile":              parseRawProfile.Result,
-				"configuredRolesPath":  configuredRolesPath,
+				"body":                   rawProfile.Result,
+				"profile":                parseRawProfile.Result,
+				"configuredRolesPath":    configuredRolesPath,
 				"configuredAllowedRoles": configuredAllowedRoles,
 			},
 		})
@@ -262,13 +260,8 @@ func OAuthToken() web.HandlerFunc {
 				})
 			return c.Redirect("/access-denied")
 		}
-		if user == nil {
-			if c.Tenant().IsPrivate {
-				isTrusted := customConfig != nil && customConfig.IsTrusted
-				if !isTrusted {
-					return c.Redirect("/not-invited")
-				}
-			}
+		if err := RequireProviderAdmission(c.Tenant(), user, customConfig != nil && customConfig.IsTrusted); err != nil {
+			return c.Redirect("/not-invited")
 		}
 
 		user, err = RegisterUserByProvider(c, c.Tenant(), user, provider, oauthUser.Result.ID, oauthUser.Result.Name, oauthUser.Result.Email)
@@ -485,4 +478,3 @@ func hasAllowedRole(userRoles []string, jsonUserRolesPath string, allowedRoles s
 	// User doesn't have any of the required roles
 	return false
 }
-

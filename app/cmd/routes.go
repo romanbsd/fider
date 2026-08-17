@@ -84,6 +84,8 @@ func routes(r *web.Engine) *web.Engine {
 			widget.Use(middlewares.WidgetCORS())
 			widget.Use(middlewares.WidgetRateLimit())
 			widget.Use(middlewares.WidgetAuth())
+			widget.Options("/widget/signin", apiv1.WidgetSignIn())
+			widget.Options("/widget/signout", apiv1.WidgetSignOut())
 			widget.Post("/widget/signin", apiv1.WidgetSignIn())
 			widget.Get("/widget/signout", apiv1.WidgetSignOut())
 		}

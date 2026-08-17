@@ -14,6 +14,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 -- comment ; not a split
+/* block comment ; not a split */
 SELECT 1
 `
 	got := splitStatements(script)
@@ -21,7 +22,7 @@ SELECT 1
 		"CREATE TABLE foo (a text);",
 		"INSERT INTO foo VALUES ('semi;colon');",
 		"CREATE OR REPLACE FUNCTION f() RETURNS void AS $$\nBEGIN\n  PERFORM 1;\nEND;\n$$ LANGUAGE plpgsql;",
-		"-- comment ; not a split\nSELECT 1",
+		"-- comment ; not a split\n/* block comment ; not a split */\nSELECT 1",
 	}
 
 	if len(got) != len(want) {
@@ -63,9 +64,9 @@ func TestSplitStatements_Empty(t *testing.T) {
 
 func TestIsConcurrentMigration(t *testing.T) {
 	cases := []struct {
-		name      string
+		name       string
 		statements []string
-		want      bool
+		want       bool
 	}{
 		{
 			name:       "plain create index",
@@ -90,6 +91,11 @@ func TestIsConcurrentMigration(t *testing.T) {
 		{
 			name:       "word in a comment lines up with real migration",
 			statements: splitStatements("-- blabla CONCURRENTLY blabla\nCREATE UNIQUE INDEX CONCURRENTLY foo ON bar (id);"),
+			want:       true,
+		},
+		{
+			name:       "block comment before concurrent migration",
+			statements: splitStatements("/* CONCURRENTLY in a comment */ CREATE INDEX CONCURRENTLY foo ON bar (id);"),
 			want:       true,
 		},
 	}
