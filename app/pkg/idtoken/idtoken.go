@@ -12,6 +12,7 @@ import (
 
 	"github.com/getfider/fider/app/pkg/errors"
 	jwtgo "github.com/golang-jwt/jwt/v4"
+	"golang.org/x/sync/singleflight"
 )
 
 // Claims are the claims expected from an Identity Provider ID token
@@ -56,6 +57,7 @@ type Validator struct {
 	mu       sync.Mutex
 	keys     map[string]*rsa.PublicKey
 	lastLoad time.Time
+	sf       singleflight.Group
 }
 
 // New creates a Validator for the given provider configuration
@@ -147,23 +149,35 @@ func jwkKid(t *jwtgo.Token) string {
 }
 
 func (v *Validator) getKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+	// Serve from cache while the key set is fresh. Read under lock, but the
+	// lock is released before any network call: holding it across fetchKeys
+	// would serialize every request behind a single 10s HTTP timeout, letting
+	// an unauthenticated caller submitting tokens with unknown kids stall
+	// every other in-flight sign-in (including other tenants').
 	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	// Serve from cache while the key set is fresh.
-	if key, ok := v.keys[kid]; ok && time.Since(v.lastLoad) < keySetTTL {
+	key, ok := v.keys[kid]
+	fresh := ok && time.Since(v.lastLoad) < keySetTTL
+	v.mu.Unlock()
+	if fresh {
 		return key, nil
 	}
 
 	// Refresh on an unknown kid or a stale key set so provider key rotation is
 	// picked up without a restart. The key set is replaced only after a
 	// successful fetch, so removed keys stop validating tokens. A failed refresh
-	// fails closed: a stale key is never served past its TTL.
-	if err := v.fetchKeys(ctx); err != nil {
+	// fails closed: a stale key is never served past its TTL. Concurrent
+	// refreshes are coalesced into a single in-flight fetch instead of each
+	// caller hitting the JWKS endpoint independently.
+	if _, err, _ := v.sf.Do("fetch", func() (any, error) {
+		return nil, v.fetchKeys(ctx)
+	}); err != nil {
 		return nil, err
 	}
 
-	if key, ok := v.keys[kid]; ok {
+	v.mu.Lock()
+	key, ok = v.keys[kid]
+	v.mu.Unlock()
+	if ok {
 		return key, nil
 	}
 	return nil, errors.New("identity provider keyset does not contain a key matching '%s'", kid)
@@ -207,8 +221,10 @@ func (v *Validator) fetchKeys(ctx context.Context) error {
 		return errors.New("identity provider keyset did not contain any usable keys")
 	}
 
+	v.mu.Lock()
 	v.keys = fresh
 	v.lastLoad = time.Now()
+	v.mu.Unlock()
 	return nil
 }
 

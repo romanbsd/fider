@@ -282,3 +282,58 @@ func TestValidator_RefreshFailure_FailsClosed(t *testing.T) {
 	_, err = validator.Verify(context.Background(), signed)
 	Expect(err).IsNotNil()
 }
+
+// TestValidator_ConcurrentUnknownKid_CoalescesFetch guards against a DoS where
+// an unauthenticated caller submits tokens with distinct unknown kids: each
+// miss used to refresh the JWKS while holding the validator-wide mutex for
+// the whole (up to client-timeout) HTTP call, serializing every other
+// verification — including for unrelated tenants — behind it. Concurrent
+// misses must now share a single in-flight fetch instead.
+func TestValidator_ConcurrentUnknownKid_CoalescesFetch(t *testing.T) {
+	RegisterT(t)
+
+	priv, pub := generateTestKeys()
+
+	var (
+		mu      sync.Mutex
+		hits    int
+		release = make(chan struct{})
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		<-release // hold every concurrent caller here until the test releases them
+		jwksHandler(pub)(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	validator := New(Config{JWKSURL: server.URL, Issuer: testIssuer, ClientID: testAudience})
+	signed := signToken(priv, nil)
+
+	const concurrency = 20
+	var wg sync.WaitGroup
+	errs := make([]error, concurrency)
+	for i := range concurrency {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = validator.Verify(context.Background(), signed)
+		}(i)
+	}
+
+	// give every goroutine a chance to reach the (blocked) HTTP handler before
+	// releasing it, so a non-coalesced implementation would have already
+	// issued its own separate request by now
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	for _, err := range errs {
+		Expect(err).IsNil()
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	Expect(hits).Equals(1)
+}
