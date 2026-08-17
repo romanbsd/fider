@@ -34,6 +34,10 @@ func StartServer() {
 		group.Get("/api/echo", func(c *web.Context) error {
 			return c.String(http.StatusOK, c.Value("the-name").(string))
 		})
+
+		group.Options("/api/echo", func(c *web.Context) error {
+			return c.NoContent(http.StatusNoContent)
+		})
 	}
 
 	e.Get("/hello", func(c *web.Context) error {
@@ -99,6 +103,20 @@ func TestEngine_MiddlewareAfterHandler(t *testing.T) {
 	content, err := io.ReadAll(resp.Body)
 	Expect(err).IsNil()
 	Expect(string(content)).Equals("John")
+	_ = resp.Body.Close()
+
+	StopServer()
+}
+
+func TestEngine_Options(t *testing.T) {
+	RegisterT(t)
+	StartServer()
+
+	req, err := http.NewRequest(http.MethodOptions, "http://127.0.0.1:8080/api/echo?name=John", nil)
+	Expect(err).IsNil()
+	resp, err := http.DefaultClient.Do(req)
+	Expect(err).IsNil()
+	Expect(resp.StatusCode).Equals(http.StatusNoContent)
 	_ = resp.Body.Close()
 
 	StopServer()

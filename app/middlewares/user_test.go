@@ -394,6 +394,276 @@ func TestUser_ValidAPIKey_Visitor(t *testing.T) {
 	Expect(query.String("errors[0].message")).Equals("API Key is invalid")
 }
 
+func TestUser_ValidMobileJWT_OnAPI(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.FiderClaims{
+		UserID:        mock.JonSnow.ID,
+		UserName:      mock.JonSnow.Name,
+		UserEmail:     mock.JonSnow.Email,
+		Origin:        jwt.FiderClaimsOriginAPI,
+		SecurityStamp: mock.JonSnow.SecurityStamp,
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		if q.UserID == mock.JonSnow.ID && q.TenantID == mock.JonSnow.Tenant.ID {
+			q.Result = mock.JonSnow
+			return nil
+		}
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, response := server.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1/posts").
+		AddHeader("Authorization", "Bearer "+token).
+		Execute(func(c *web.Context) error {
+			return c.String(http.StatusOK, c.User().Name)
+		})
+
+	Expect(status).Equals(http.StatusOK)
+	Expect(response.Body.String()).Equals("Jon Snow")
+}
+
+func TestUser_MobileJWT_SecurityStampMismatch(t *testing.T) {
+	RegisterT(t)
+
+	stale := &entity.User{
+		ID:            mock.JonSnow.ID,
+		Name:          mock.JonSnow.Name,
+		Email:         mock.JonSnow.Email,
+		Tenant:        mock.DemoTenant,
+		Status:        enum.UserActive,
+		Role:          enum.RoleAdministrator,
+		SecurityStamp: "old-stamp",
+	}
+
+	token, err := jwt.Encode(jwt.FiderClaims{
+		UserID:        mock.JonSnow.ID,
+		UserName:      mock.JonSnow.Name,
+		Origin:        jwt.FiderClaimsOriginAPI,
+		SecurityStamp: "new-stamp",
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		q.Result = stale
+		return nil
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, _ := server.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1").
+		AddHeader("Authorization", "Bearer "+token).
+		ExecuteAsJSON(func(c *web.Context) error {
+			return c.String(http.StatusOK, c.User().Name)
+		})
+
+	Expect(status).Equals(http.StatusUnauthorized)
+}
+
+func TestUser_UIOriginJWT_NotAcceptedAsAPI(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.FiderClaims{
+		UserID:   mock.JonSnow.ID,
+		UserName: mock.JonSnow.Name,
+		Origin:   jwt.FiderClaimsOriginUI,
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByAPIKey) error {
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, _ := server.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1").
+		AddHeader("Authorization", "Bearer "+token).
+		ExecuteAsJSON(func(c *web.Context) error {
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusBadRequest)
+}
+
+func TestUser_RevokedWidgetToken_JWTRejected(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:        mock.JonSnow.ID,
+			UserName:      mock.JonSnow.Name,
+			Origin:        jwt.FiderClaimsOriginAPI,
+			SecurityStamp: mock.JonSnow.SecurityStamp,
+		},
+		WidgetTokenHash: "revoked-token-hash",
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, _ := server.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1/posts").
+		AddHeader("Authorization", "Bearer "+token).
+		ExecuteAsJSON(func(c *web.Context) error {
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusUnauthorized)
+}
+
+func TestUser_RevokedWidgetToken_CookieRejected(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:        mock.JonSnow.ID,
+			UserName:      mock.JonSnow.Name,
+			SecurityStamp: mock.JonSnow.SecurityStamp,
+		},
+		WidgetTokenHash: "revoked-token-hash",
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, response := server.
+		OnTenant(mock.DemoTenant).
+		AddCookie(web.CookieAuthName, token).
+		Execute(func(c *web.Context) error {
+			if c.User() == nil {
+				return c.NoContent(http.StatusNoContent)
+			}
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusNoContent)
+	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
+}
+
+func TestUser_APIOriginJWT_NotAcceptedAsCookie(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:        mock.JonSnow.ID,
+			UserName:      mock.JonSnow.Name,
+			Origin:        jwt.FiderClaimsOriginAPI,
+			SecurityStamp: mock.JonSnow.SecurityStamp,
+		},
+		WidgetTokenHash: "active-token-hash",
+	})
+	Expect(err).IsNil()
+
+	// The token is fully valid in every other respect (user resolves, security
+	// stamp matches, widget token is active) — only its Origin marks it as a
+	// bearer-only API credential. Without the Origin check this would open a
+	// full UI session for the user.
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		if q.UserID == mock.JonSnow.ID {
+			q.Result = mock.JonSnow
+			return nil
+		}
+		return app.ErrNotFound
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
+		return nil
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, response := server.
+		OnTenant(mock.DemoTenant).
+		AddCookie(web.CookieAuthName, token).
+		Execute(func(c *web.Context) error {
+			if c.User() == nil {
+				return c.NoContent(http.StatusNoContent)
+			}
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusNoContent)
+	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
+}
+
+func TestUser_APIOriginCookie_ValidBearer_StillAuthenticates(t *testing.T) {
+	RegisterT(t)
+
+	// The cookie carries an API-origin (widget) token that must never open a
+	// session by itself...
+	cookieToken, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:   999, // no such user: proves the cookie itself is ignored
+			UserName: "Widget",
+			Origin:   jwt.FiderClaimsOriginAPI,
+		},
+		WidgetTokenHash: "whatever",
+	})
+	Expect(err).IsNil()
+
+	// ...but the same request also presents a valid bearer JWT, which must
+	// still authenticate the caller.
+	bearerToken, err := jwt.Encode(jwt.FiderClaims{
+		UserID:        mock.JonSnow.ID,
+		UserName:      mock.JonSnow.Name,
+		UserEmail:     mock.JonSnow.Email,
+		Origin:        jwt.FiderClaimsOriginAPI,
+		SecurityStamp: mock.JonSnow.SecurityStamp,
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		if q.UserID == mock.JonSnow.ID {
+			q.Result = mock.JonSnow
+			return nil
+		}
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, response := server.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1/posts").
+		AddCookie(web.CookieAuthName, cookieToken).
+		AddHeader("Authorization", "Bearer "+bearerToken).
+		Execute(func(c *web.Context) error {
+			return c.String(http.StatusOK, c.User().Name)
+		})
+
+	Expect(status).Equals(http.StatusOK)
+	Expect(response.Body.String()).Equals("Jon Snow")
+	// The discarded API-origin cookie is still removed even though the bearer
+	// token authenticated the request.
+	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
+}
+
 func TestUser_Impersonation_Collaborator(t *testing.T) {
 	RegisterT(t)
 
@@ -698,4 +968,3 @@ func TestUser_SecurityStamp_EmptyInToken(t *testing.T) {
 	Expect(status).Equals(http.StatusOK)
 	Expect(response.Body.String()).Equals("Jon Snow")
 }
-
