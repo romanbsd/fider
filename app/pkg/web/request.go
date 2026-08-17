@@ -65,6 +65,17 @@ func (r *Request) GetHeader(key string) string {
 	return r.instance.Header.Get(key)
 }
 
+// RemoteAddr returns the network address that sent the request
+func (r *Request) RemoteAddr() string {
+	return r.instance.RemoteAddr
+}
+
+// SetRemoteAddr updates the network address that sent the request. Used by
+// tests to simulate a remote peer address.
+func (r *Request) SetRemoteAddr(addr string) {
+	r.instance.RemoteAddr = addr
+}
+
 // SetHeader updates the value of HTTP header of given key
 func (r *Request) SetHeader(key, value string) {
 	r.instance.Header.Set(key, value)

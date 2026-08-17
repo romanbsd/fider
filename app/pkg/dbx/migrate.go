@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	stdErrors "errors"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,12 +97,49 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 		return errors.Wrap(err, "failed to read file '%s'", filePath)
 	}
 
+	sql := string(content)
+	statements := splitStatements(sql)
+	if isConcurrentMigration(statements) {
+		// CREATE INDEX CONCURRENTLY cannot run inside a transaction (nor share an
+		// implicit transaction with other statements), so the statements of this
+		// migration run one at a time, each in its own implicit transaction. The
+		// migration is therefore not atomic: a failed run may leave earlier
+		// statements committed and unrecorded. Migration files using CONCURRENTLY
+		// should be written idempotently (IF NOT EXISTS etc.) so the next run can
+		// recover.
+		for _, statement := range statements {
+			if name, ok := dropIndexTarget(statement); ok {
+				valid, err := indexIsValid(name)
+				if err != nil {
+					return errors.Wrap(err, "failed to run migration '%s'", fileName)
+				}
+				if valid {
+					// A valid index doesn't need repairing: dropping it here
+					// would open a window, before the CONCURRENTLY rebuild
+					// below completes, where concurrent writes could violate
+					// the constraint it enforces (and could then make the
+					// rebuild itself fail). Only an invalid index left behind
+					// by an interrupted CONCURRENTLY build needs dropping.
+					continue
+				}
+			}
+			if _, err := conn.Exec(statement); err != nil {
+				return errors.Wrap(err, "failed to run migration '%s'", fileName)
+			}
+		}
+
+		if _, err := conn.Exec("INSERT INTO migrations_history (version, filename) VALUES ($1, $2)", version, fileName); err != nil {
+			return errors.Wrap(err, "failed to record migration '%s'", fileName)
+		}
+		return nil
+	}
+
 	trx, err := BeginTx(ctx)
 	if err != nil {
 		return err
 	}
 
-	_, err = trx.tx.Exec(string(content))
+	_, err = trx.tx.Exec(sql)
 	if err != nil {
 		return err
 	}
@@ -112,6 +150,226 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 	}
 
 	return trx.Commit()
+}
+
+var concurrentIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
+
+// identPattern matches one SQL identifier: either double-quoted (preserving
+// case and any character, "" is an escaped quote) or a bare identifier.
+const identPattern = `(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`
+
+var dropIndexRegex = regexp.MustCompile(`(?i)^DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?(` + identPattern + `(?:\.` + identPattern + `)?)\s*;?\s*$`)
+
+// stripLeadingComments removes any leading line/block comments from s (as
+// isConcurrentMigration does), so a keyword-anchored regex can match
+// statements that a migration author chose to document.
+func stripLeadingComments(s string) string {
+	cleaned := strings.TrimSpace(s)
+	for {
+		switch {
+		case strings.HasPrefix(cleaned, "--"):
+			end := strings.IndexByte(cleaned, '\n')
+			if end == -1 {
+				return ""
+			}
+			cleaned = strings.TrimSpace(cleaned[end+1:])
+		case strings.HasPrefix(cleaned, "/*"):
+			cleaned = strings.TrimSpace(cleaned[blockCommentEnd(cleaned, 0):])
+		default:
+			return cleaned
+		}
+	}
+}
+
+// dropIndexTarget returns the exact index reference (schema-qualified and/or
+// quoted, as written) targeted by a DROP INDEX statement, if the statement
+// (after any leading comments) is exactly that. The reference is returned
+// unmodified so it can be passed straight to to_regclass, which parses
+// quoting and case-folding the same way the SQL parser does.
+func dropIndexTarget(statement string) (string, bool) {
+	m := dropIndexRegex.FindStringSubmatch(stripLeadingComments(statement))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// indexIsValid reports whether an index with the given name currently exists
+// and is valid (i.e. not left behind by an interrupted CONCURRENTLY build).
+func indexIsValid(name string) (bool, error) {
+	var valid bool
+	row := conn.QueryRow(`SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)`, name)
+	if err := row.Scan(&valid); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return valid, nil
+}
+
+// isConcurrentMigration reports whether any statement of the script is a
+// CREATE INDEX CONCURRENTLY, ignoring leading SQL comments. Detection runs on
+// the split statements so the word CONCURRENTLY inside comments or quoted
+// identifiers cannot trigger the non-transactional path.
+func isConcurrentMigration(statements []string) bool {
+	for _, s := range statements {
+		if concurrentIndexRegex.MatchString(stripLeadingComments(s)) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitStatements splits a SQL script into individual statements, honouring
+// single-quoted literals, double-quoted identifiers, dollar-quoted strings,
+// and SQL comments, so statements can be run outside a transaction (e.g.
+// CREATE INDEX CONCURRENTLY).
+func splitStatements(script string) []string {
+	var (
+		statements []string
+		start      int
+		i          int
+	)
+
+	for i < len(script) {
+		switch script[i] {
+		case '\'', '"':
+			quote := script[i]
+			// E'...' strings (but not plain '...' literals) treat backslash as an
+			// escape character, so \' there does not terminate the literal. The
+			// E prefix is a standalone token: a preceding identifier character
+			// means the 'e' is part of a word (e.g. ...name='a'), not an E-string.
+			eString := quote == '\'' && i > 0 &&
+				(script[i-1] == 'e' || script[i-1] == 'E') &&
+				(i < 2 || !isIdentChar(script[i-2]))
+			for {
+				end := strings.IndexByte(script[i+1:], quote)
+				if end == -1 {
+					i = len(script)
+					break
+				}
+				i += end + 1
+				if eString && escapedEStringQuote(script, i-1) {
+					// escaped quote inside an E-string literal (E'it\'s'); a quote
+					// is only escaped by an odd-length run of backslashes — an
+					// even run pairs them up and leaves the quote as the literal's
+					// terminator
+					i++
+					continue
+				}
+				if i+1 < len(script) && script[i+1] == quote {
+					// escaped quote inside the literal/identifier ('')
+					i++
+					continue
+				}
+				i++
+				break
+			}
+		case '$':
+			if tag, ok := dollarQuoteTag(script, i); ok {
+				end := strings.Index(script[i+len(tag):], tag)
+				if end == -1 {
+					i = len(script)
+				} else {
+					i += len(tag) + end + len(tag)
+				}
+			} else {
+				i++
+			}
+		case ';':
+			statements = append(statements, strings.TrimSpace(script[start:i+1]))
+			i++
+			start = i
+		case '-':
+			if i+1 < len(script) && script[i+1] == '-' {
+				if end := strings.IndexByte(script[i+2:], '\n'); end == -1 {
+					i = len(script)
+				} else {
+					i += 2 + end + 1
+				}
+			} else {
+				i++
+			}
+		case '/':
+			if i+1 < len(script) && script[i+1] == '*' {
+				i = blockCommentEnd(script, i)
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+
+	if trailing := strings.TrimSpace(script[start:]); trailing != "" {
+		statements = append(statements, trailing)
+	}
+	return statements
+}
+
+// blockCommentEnd returns the index just past the closing "*/" for a block
+// comment starting at s[start:start+2] == "/*", honouring nested block
+// comments (Postgres allows /* /* */ */, unlike C). Returns len(s) if the
+// comment is unterminated.
+func blockCommentEnd(s string, start int) int {
+	depth := 0
+	i := start
+	for i < len(s) {
+		switch {
+		case strings.HasPrefix(s[i:], "/*"):
+			depth++
+			i += 2
+		case strings.HasPrefix(s[i:], "*/"):
+			depth--
+			i += 2
+			if depth == 0 {
+				return i
+			}
+		default:
+			i++
+		}
+	}
+	return len(s)
+}
+
+// isIdentChar reports whether b can appear inside a PostgreSQL identifier.
+// Used to distinguish a standalone E-string prefix from an 'e' that is the last
+// letter of an identifier.
+func isIdentChar(b byte) bool {
+	return b == '_' || b == '$' ||
+		b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
+}
+
+// escapedEStringQuote reports whether the quote at index start-1 inside an
+// E-string is escaped by the run of backslashes directly before it. PostgreSQL
+// pairs consecutive backslashes up, so only an odd-length run escapes the
+// following quote; an even-length run leaves the quote as the literal's
+// terminator.
+func escapedEStringQuote(script string, start int) bool {
+	backslashes := 0
+	for j := start; j >= 0 && script[j] == '\\'; j-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
+}
+
+func dollarQuoteTag(script string, i int) (string, bool) {
+	if script[i] != '$' {
+		return "", false
+	}
+
+	j := i + 1
+	for j < len(script) && (script[j] == '_' || script[j] >= 'a' && script[j] <= 'z' || script[j] >= 'A' && script[j] <= 'Z' || script[j] >= '0' && script[j] <= '9') {
+		if j == i+1 && script[j] >= '0' && script[j] <= '9' {
+			return "", false
+		}
+		j++
+	}
+	if j >= len(script) || script[j] != '$' {
+		return "", false
+	}
+	return script[i : j+1], true
 }
 
 func getLastMigration() (int, error) {

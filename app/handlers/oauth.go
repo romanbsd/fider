@@ -2,9 +2,7 @@ package handlers
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,8 +17,8 @@ import (
 
 	"github.com/getfider/fider/app/models/query"
 	"github.com/getfider/fider/app/pkg/bus"
+	"github.com/getfider/fider/app/pkg/crypto"
 
-	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/pkg/env"
 	"github.com/getfider/fider/app/pkg/errors"
 	"github.com/getfider/fider/app/pkg/jwt"
@@ -122,8 +120,7 @@ func isValidOAuthHandoff(c *web.Context, provider, handoff string) bool {
 // hashSessionID hashes a session ID so the handoff token can be bound to a browser session
 // without the session ID itself travelling through URLs, logs and referrers.
 func hashSessionID(sessionID string) string {
-	sum := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(sum[:])
+	return crypto.SHA256(sessionID)
 }
 
 // sanitiseOAuthRedirect reduces a caller supplied redirect to a path on the current tenant.
@@ -195,9 +192,9 @@ func OAuthEcho() web.HandlerFunc {
 			Page:  "OAuthEcho/OAuthEcho.page",
 			Title: "OAuth Test Page",
 			Data: web.Map{
-				"body":                 rawProfile.Result,
-				"profile":              parseRawProfile.Result,
-				"configuredRolesPath":  configuredRolesPath,
+				"body":                   rawProfile.Result,
+				"profile":                parseRawProfile.Result,
+				"configuredRolesPath":    configuredRolesPath,
 				"configuredAllowedRoles": configuredAllowedRoles,
 			},
 		})
@@ -239,16 +236,9 @@ func OAuthToken() web.HandlerFunc {
 		// Look up the existing Fider user first (by provider UID, then by email).
 		// We need this before the role check so that administrators and collaborators
 		// can always sign in regardless of OAuth role changes.
-		var user *entity.User
-
-		userByProvider := &query.GetUserByProvider{Provider: provider, UID: oauthUser.Result.ID}
-		err = bus.Dispatch(c, userByProvider)
-		user = userByProvider.Result
-
-		if errors.Cause(err) == app.ErrNotFound && oauthUser.Result.Email != "" {
-			userByEmail := &query.GetUserByEmail{Email: oauthUser.Result.Email}
-			err = bus.Dispatch(c, userByEmail)
-			user = userByEmail.Result
+		user, lookupErr := FindUserByProviderOrEmail(c, provider, oauthUser.Result.ID, oauthUser.Result.Email)
+		if lookupErr != nil {
+			return c.Failure(lookupErr)
 		}
 
 		// Check if user has the required roles for this provider.
@@ -270,40 +260,13 @@ func OAuthToken() web.HandlerFunc {
 				})
 			return c.Redirect("/access-denied")
 		}
+		if err := RequireProviderAdmission(c.Tenant(), user, customConfig != nil && customConfig.IsTrusted); err != nil {
+			return c.Redirect("/not-invited")
+		}
+
+		user, err = RegisterUserByProvider(c, c.Tenant(), user, provider, oauthUser.Result.ID, oauthUser.Result.Name, oauthUser.Result.Email)
 		if err != nil {
-			if errors.Cause(err) == app.ErrNotFound {
-				isTrusted := customConfig != nil && customConfig.IsTrusted
-				if c.Tenant().IsPrivate && !isTrusted {
-					return c.Redirect("/not-invited")
-				}
-
-				user = &entity.User{
-					Name:   oauthUser.Result.Name,
-					Tenant: c.Tenant(),
-					Email:  oauthUser.Result.Email,
-					Role:   enum.RoleVisitor,
-					Providers: []*entity.UserProvider{
-						{
-							UID:  oauthUser.Result.ID,
-							Name: provider,
-						},
-					},
-				}
-
-				if err = bus.Dispatch(c, &cmd.RegisterUser{User: user}); err != nil {
-					return c.Failure(err)
-				}
-			} else {
-				return c.Failure(err)
-			}
-		} else if !user.HasProvider(provider) {
-			if err = bus.Dispatch(c, &cmd.RegisterUserProvider{
-				UserID:       user.ID,
-				ProviderName: provider,
-				ProviderUID:  oauthUser.Result.ID,
-			}); err != nil {
-				return c.Failure(err)
-			}
+			return c.Failure(err)
 		}
 
 		webutil.AddAuthUserCookie(c, user)
@@ -515,4 +478,3 @@ func hasAllowedRole(userRoles []string, jsonUserRolesPath string, allowedRoles s
 	// User doesn't have any of the required roles
 	return false
 }
-
