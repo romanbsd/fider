@@ -153,16 +153,45 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 }
 
 var concurrentIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
-var dropIndexRegex = regexp.MustCompile(`(?i)^DROP\s+INDEX\s+(CONCURRENTLY\s+)?(IF\s+EXISTS\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\s*;?\s*$`)
 
-// dropIndexTarget returns the index name targeted by a (trimmed) DROP INDEX
-// statement, if the statement is exactly that.
+// identPattern matches one SQL identifier: either double-quoted (preserving
+// case and any character, "" is an escaped quote) or a bare identifier.
+const identPattern = `(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`
+
+var dropIndexRegex = regexp.MustCompile(`(?i)^DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?(` + identPattern + `(?:\.` + identPattern + `)?)\s*;?\s*$`)
+
+// stripLeadingComments removes any leading line/block comments from s (as
+// isConcurrentMigration does), so a keyword-anchored regex can match
+// statements that a migration author chose to document.
+func stripLeadingComments(s string) string {
+	cleaned := strings.TrimSpace(s)
+	for {
+		switch {
+		case strings.HasPrefix(cleaned, "--"):
+			end := strings.IndexByte(cleaned, '\n')
+			if end == -1 {
+				return ""
+			}
+			cleaned = strings.TrimSpace(cleaned[end+1:])
+		case strings.HasPrefix(cleaned, "/*"):
+			cleaned = strings.TrimSpace(cleaned[blockCommentEnd(cleaned, 0):])
+		default:
+			return cleaned
+		}
+	}
+}
+
+// dropIndexTarget returns the exact index reference (schema-qualified and/or
+// quoted, as written) targeted by a DROP INDEX statement, if the statement
+// (after any leading comments) is exactly that. The reference is returned
+// unmodified so it can be passed straight to to_regclass, which parses
+// quoting and case-folding the same way the SQL parser does.
 func dropIndexTarget(statement string) (string, bool) {
-	m := dropIndexRegex.FindStringSubmatch(strings.TrimSpace(statement))
+	m := dropIndexRegex.FindStringSubmatch(stripLeadingComments(statement))
 	if m == nil {
 		return "", false
 	}
-	return m[3], true
+	return m[1], true
 }
 
 // indexIsValid reports whether an index with the given name currently exists
@@ -185,26 +214,7 @@ func indexIsValid(name string) (bool, error) {
 // identifiers cannot trigger the non-transactional path.
 func isConcurrentMigration(statements []string) bool {
 	for _, s := range statements {
-		cleaned := strings.TrimSpace(s)
-
-		for {
-			switch {
-			case strings.HasPrefix(cleaned, "--"):
-				end := strings.IndexByte(cleaned, '\n')
-				if end == -1 {
-					cleaned = ""
-				} else {
-					cleaned = strings.TrimSpace(cleaned[end+1:])
-				}
-			case strings.HasPrefix(cleaned, "/*"):
-				cleaned = strings.TrimSpace(cleaned[blockCommentEnd(cleaned, 0):])
-			default:
-				goto commentsStripped
-			}
-		}
-	commentsStripped:
-
-		if concurrentIndexRegex.MatchString(cleaned) {
+		if concurrentIndexRegex.MatchString(stripLeadingComments(s)) {
 			return true
 		}
 	}
