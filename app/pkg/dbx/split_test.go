@@ -75,6 +75,25 @@ SELECT 1;`
 	}
 }
 
+func TestSplitStatements_NestedBlockComment(t *testing.T) {
+	script := `/* outer /* inner ; still commented */ still commented too */
+SELECT 1;`
+
+	got := splitStatements(script)
+	want := []string{
+		"/* outer /* inner ; still commented */ still commented too */\nSELECT 1;",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d statements, got %d: %q", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("statement %d mismatch:\n got: %q\nwant: %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSplitStatements_Empty(t *testing.T) {
 	got := splitStatements("  \n\t ")
 	if len(got) != 0 {
@@ -117,6 +136,11 @@ func TestIsConcurrentMigration(t *testing.T) {
 			name:       "block comment before concurrent migration",
 			statements: splitStatements("/* CONCURRENTLY in a comment */ CREATE INDEX CONCURRENTLY foo ON bar (id);"),
 			want:       true,
+		},
+		{
+			name:       "concurrently only inside nested comment is ignored",
+			statements: splitStatements("/* outer /* CONCURRENTLY nested */ still a comment */ CREATE INDEX foo ON bar (id);"),
+			want:       false,
 		},
 	}
 

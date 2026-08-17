@@ -157,12 +157,7 @@ func isConcurrentMigration(statements []string) bool {
 					cleaned = strings.TrimSpace(cleaned[end+1:])
 				}
 			case strings.HasPrefix(cleaned, "/*"):
-				end := strings.Index(cleaned[2:], "*/")
-				if end == -1 {
-					cleaned = ""
-				} else {
-					cleaned = strings.TrimSpace(cleaned[end+4:])
-				}
+				cleaned = strings.TrimSpace(cleaned[blockCommentEnd(cleaned, 0):])
 			default:
 				goto commentsStripped
 			}
@@ -233,12 +228,7 @@ func splitStatements(script string) []string {
 			}
 		case '/':
 			if i+1 < len(script) && script[i+1] == '*' {
-				end := strings.Index(script[i+2:], "*/")
-				if end == -1 {
-					i = len(script)
-				} else {
-					i += end + 4
-				}
+				i = blockCommentEnd(script, i)
 			} else {
 				i++
 			}
@@ -251,6 +241,31 @@ func splitStatements(script string) []string {
 		statements = append(statements, trailing)
 	}
 	return statements
+}
+
+// blockCommentEnd returns the index just past the closing "*/" for a block
+// comment starting at s[start:start+2] == "/*", honouring nested block
+// comments (Postgres allows /* /* */ */, unlike C). Returns len(s) if the
+// comment is unterminated.
+func blockCommentEnd(s string, start int) int {
+	depth := 0
+	i := start
+	for i < len(s) {
+		switch {
+		case strings.HasPrefix(s[i:], "/*"):
+			depth++
+			i += 2
+		case strings.HasPrefix(s[i:], "*/"):
+			depth--
+			i += 2
+			if depth == 0 {
+				return i
+			}
+		default:
+			i++
+		}
+	}
+	return len(s)
 }
 
 func dollarQuoteTag(script string, i int) (string, bool) {
