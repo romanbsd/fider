@@ -58,7 +58,7 @@ func WidgetSignIn() web.HandlerFunc {
 		} else {
 			if input.Token == "" || !widgettoken.ValidUDID(input.UDID) {
 				return c.BadRequest(web.Map{
-					"errors": web.Map{"token": "token is required, udid must be 8-128 chars"},
+					"errors": web.Map{"token": "token is required, udid must be a valid UUID"},
 				})
 			}
 			u, secret, err := signInByWidgetToken(c, input)

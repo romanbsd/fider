@@ -68,7 +68,7 @@ func TestWidgetAuth_WidgetToken(t *testing.T) {
 	})
 
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		if q.DeviceHash == widgettoken.DeviceHash("device-0x123") {
+		if q.DeviceHash == widgettoken.DeviceHash("11111111-1111-4111-8111-111111111111") {
 			q.Result = testDeviceUser
 			return nil
 		}
@@ -80,7 +80,7 @@ func TestWidgetAuth_WidgetToken(t *testing.T) {
 	status, response := server.
 		OnTenant(mock.DemoTenant).
 		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "device-0x123").
+		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
 		AddHeader("X-Widget-Device-Secret", testDeviceSecret).
 		Execute(func(c *web.Context) error {
 			return c.String(http.StatusOK, c.User().Name)
@@ -100,7 +100,7 @@ func TestWidgetAuth_WidgetToken_MissingDeviceSecret(t *testing.T) {
 	})
 
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		if q.DeviceHash == widgettoken.DeviceHash("device-0x123") {
+		if q.DeviceHash == widgettoken.DeviceHash("11111111-1111-4111-8111-111111111111") {
 			q.Result = testDeviceUser
 			return nil
 		}
@@ -112,7 +112,7 @@ func TestWidgetAuth_WidgetToken_MissingDeviceSecret(t *testing.T) {
 	status, _ := server.
 		OnTenant(mock.DemoTenant).
 		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "device-0x123").
+		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
 		Execute(func(c *web.Context) error {
 			return c.NoContent(http.StatusOK)
 		})
@@ -130,7 +130,7 @@ func TestWidgetAuth_WidgetToken_WrongDeviceSecret(t *testing.T) {
 	})
 
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		if q.DeviceHash == widgettoken.DeviceHash("device-0x123") {
+		if q.DeviceHash == widgettoken.DeviceHash("11111111-1111-4111-8111-111111111111") {
 			q.Result = testDeviceUser
 			return nil
 		}
@@ -142,7 +142,7 @@ func TestWidgetAuth_WidgetToken_WrongDeviceSecret(t *testing.T) {
 	status, _ := server.
 		OnTenant(mock.DemoTenant).
 		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "device-0x123").
+		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
 		AddHeader("X-Widget-Device-Secret", "not-the-right-secret").
 		Execute(func(c *web.Context) error {
 			return c.NoContent(http.StatusOK)
@@ -160,7 +160,7 @@ func TestWidgetAuth_WidgetToken_Invalid(t *testing.T) {
 	status, _ := server.
 		OnTenant(mock.DemoTenant).
 		AddHeader("X-Widget-Token", "invalid-token").
-		AddHeader("X-Widget-UDID", "device-0x123").
+		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
 		Execute(func(c *web.Context) error {
 			return c.NoContent(http.StatusOK)
 		})
@@ -198,7 +198,7 @@ func TestWidgetAuth_WidgetToken_DeviceNotFound(t *testing.T) {
 	status, _ := server.
 		OnTenant(mock.DemoTenant).
 		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "unknown-device").
+		AddHeader("X-Widget-UDID", "22222222-2222-4222-8222-222222222222").
 		Execute(func(c *web.Context) error {
 			return c.NoContent(http.StatusOK)
 		})
@@ -347,7 +347,7 @@ func TestWidgetAuth_TracksLastUsed(t *testing.T) {
 	_, _ = server.
 		OnTenant(mock.DemoTenant).
 		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "device-0x123").
+		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
 		Execute(func(c *web.Context) error {
 			return c.NoContent(http.StatusOK)
 		})

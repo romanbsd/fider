@@ -31,7 +31,7 @@ func TestWidgetSignIn_NewDevice_ReturnsDeviceSecret(t *testing.T) {
 
 	status, query := mock.NewServer().
 		OnTenant(mock.DemoTenant).
-		ExecutePostAsJSON(apiv1.WidgetSignIn(), `{ "token": "raw-token", "udid": "device-001-udid" }`)
+		ExecutePostAsJSON(apiv1.WidgetSignIn(), `{ "token": "raw-token", "udid": "550e8400-e29b-41d4-a716-446655440000" }`)
 
 	Expect(status).Equals(http.StatusOK)
 	Expect(query.String("device_secret")).Equals("brand-new-secret")
@@ -54,7 +54,7 @@ func TestWidgetSignIn_ExistingDevice_NoDeviceSecretInResponse(t *testing.T) {
 
 	status, query := mock.NewServer().
 		OnTenant(mock.DemoTenant).
-		ExecutePostAsJSON(apiv1.WidgetSignIn(), `{ "token": "raw-token", "udid": "device-001-udid", "device_secret": "existing-secret" }`)
+		ExecutePostAsJSON(apiv1.WidgetSignIn(), `{ "token": "raw-token", "udid": "550e8400-e29b-41d4-a716-446655440000", "device_secret": "existing-secret" }`)
 
 	Expect(status).Equals(http.StatusOK)
 	Expect(query.String("device_secret")).Equals("")
@@ -73,7 +73,7 @@ func TestWidgetSignIn_WrongDeviceSecret_Unauthorized(t *testing.T) {
 
 	status, _ := mock.NewServer().
 		OnTenant(mock.DemoTenant).
-		ExecutePostAsJSON(apiv1.WidgetSignIn(), `{ "token": "raw-token", "udid": "device-001-udid", "device_secret": "wrong" }`)
+		ExecutePostAsJSON(apiv1.WidgetSignIn(), `{ "token": "raw-token", "udid": "550e8400-e29b-41d4-a716-446655440000", "device_secret": "wrong" }`)
 
 	Expect(status).Equals(http.StatusUnauthorized)
 }

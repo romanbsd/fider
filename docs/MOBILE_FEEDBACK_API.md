@@ -90,7 +90,11 @@ of:
 - The `/widget/signin` path is exempt from authentication (it *is* the login).
 - Token/device mismatch, unknown device, missing/incorrect device secret, or a
   revoked token → `401`.
-- `X-Widget-UDID` must be 8–128 chars.
+- `X-Widget-UDID` must be a well-formed UUID (any RFC 4122 version — a bare
+  length check isn't enough: the device-secret protection on first
+  registration only works if `udid` actually carries the entropy a real UUID
+  v4 has, so it can't be feasibly pre-registered ahead of a legitimate
+  device — see [4.4 Security notes](#44-security-notes)).
 - The widget token alone identifies the *tenant*, not the caller — every device
   of a tenant shares it. `X-Widget-Device-Secret` is the caller's actual proof
   of identity for this specific device; see
@@ -168,7 +172,7 @@ Errors:
 
 | Status | Body | Cause |
 | --- | --- | --- |
-| `400` | `{"errors":{"token":"token is required, udid must be 8-128 chars"}}` | Missing `token`, or `udid` missing/outside the 8-128 char range, on device path |
+| `400` | `{"errors":{"token":"token is required, udid must be a valid UUID"}}` | Missing `token`, or `udid` missing/not a well-formed UUID, on device path |
 | `401` | — | Invalid or revoked widget token, or `device_secret` missing/incorrect for an already-registered `udid` |
 | `422` | `{"error":"..."}` | Invalid `id_token`, or id_token sign-in not configured |
 | `429` | `{"error":"Too Many Requests"}` | Tenant rate limit exceeded |
@@ -307,6 +311,17 @@ the tenant.
   device's user. Treat `device_secret` as a non-shareable credential, the same as
   a password — a client that loses it cannot recover the same device identity and
   must be treated as re-registering.
+- **First registration is first-come, first-served on `udid`.** A caller
+  holding only the widget token can register a brand-new `udid` before its
+  legitimate owner ever does, claiming that device identity and locking the
+  real device out with no recovery. The server rejects any `udid` that isn't
+  a well-formed UUID specifically to make this impractical: pre-registering a
+  meaningful share of a real UUID v4's ~122-bit space isn't feasible. This
+  depends on the *server-side format check*, not client cooperation — but it
+  does not, and cannot, prevent a client's own duplicate first-launch request
+  from racing itself; a client should sign in exactly once per install and
+  treat that as fire-and-forget (no naive retry-on-timeout with a fresh
+  request).
 - Device users are role `Visitor` — they cannot administer anything. Raise
   privilege via the normal member/admin flow if a device user needs more.
 - `Access-Control-Allow-Origin: *` is intentional (arbitrary customer sites embed the

@@ -1,6 +1,8 @@
 package widgettoken
 
 import (
+	"regexp"
+
 	"github.com/getfider/fider/app/models/cmd"
 	"github.com/getfider/fider/app/models/entity"
 	"github.com/getfider/fider/app/models/query"
@@ -17,18 +19,22 @@ func DeviceHash(udid string) string {
 	return crypto.SHA256(udid)
 }
 
-// minUDIDLength and maxUDIDLength are the documented bounds for a device
-// identifier (docs/MOBILE_FEEDBACK_API.md): long enough to carry real entropy
-// (a UUID v4 is 36 chars), short enough to keep the header/body small.
-const (
-	minUDIDLength = 8
-	maxUDIDLength = 128
-)
+// udidPattern matches a well-formed RFC 4122 UUID (any version).
+var udidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
-// ValidUDID reports whether udid meets the documented length constraint for
-// X-Widget-UDID / the sign-in udid field.
+// ValidUDID reports whether udid is a well-formed UUID for X-Widget-UDID /
+// the sign-in udid field. The device-secret protection on first registration
+// (see registerDeviceUser) only works because a real UUID v4 carries ~122
+// bits of entropy, making it infeasible to pre-register/squat a meaningful
+// share of the identifier space ahead of a legitimate device. A bare length
+// check (previously: any 8-128 char string) doesn't guarantee that — a
+// client using short, sequential, or otherwise predictable identifiers would
+// leave that assumption false, and an attacker holding only the tenant-wide
+// widget token could cheaply pre-claim device_hash values a real device
+// might later use, permanently locking it out (see
+// docs/MOBILE_FEEDBACK_API.md §4.4).
 func ValidUDID(udid string) bool {
-	return len(udid) >= minUDIDLength && len(udid) <= maxUDIDLength
+	return udidPattern.MatchString(udid)
 }
 
 // Validate checks that rawToken matches an active widget token of the current

@@ -85,6 +85,36 @@ func TestDeviceHash_Deterministic(t *testing.T) {
 	Expect(first).NotEquals(widgettoken.DeviceHash("device-456"))
 }
 
+func TestValidUDID(t *testing.T) {
+	RegisterT(t)
+
+	cases := []struct {
+		name string
+		udid string
+		want bool
+	}{
+		{name: "valid uuid v4", udid: "550e8400-e29b-41d4-a716-446655440000", want: true},
+		{name: "valid uuid v4 uppercase", udid: "550E8400-E29B-41D4-A716-446655440000", want: true},
+		{
+			name: "valid uuid v1",
+			udid: "550e8400-e29b-11d4-a716-446655440000",
+			want: true,
+		},
+		{name: "empty", udid: "", want: false},
+		{name: "short non-uuid string within old length bounds", udid: "device-123", want: false},
+		{name: "arbitrary 36-char string, not uuid shape", udid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", want: false},
+		{name: "uuid missing hyphens", udid: "550e8400e29b41d4a716446655440000", want: false},
+		{name: "invalid version nibble", udid: "550e8400-e29b-91d4-a716-446655440000", want: false},
+		{name: "invalid variant nibble", udid: "550e8400-e29b-41d4-c716-446655440000", want: false},
+	}
+
+	for _, tc := range cases {
+		if got := widgettoken.ValidUDID(tc.udid); got != tc.want {
+			t.Errorf("%s: ValidUDID(%q) = %v, want %v", tc.name, tc.udid, got, tc.want)
+		}
+	}
+}
+
 func TestValidateSession(t *testing.T) {
 	RegisterT(t)
 
