@@ -25,6 +25,29 @@ func generateSecurityStamp() string {
 	return rand.String(64)
 }
 
+// insertUser inserts a new user row. When deviceHash is provided the insert is
+// scoped to (tenant_id, device_hash) via an ON CONFLICT DO NOTHING clause, in
+// which case a conflicting row yields ErrNotFound instead of an id.
+func insertUser(trx *dbx.Trx, tenant *entity.Tenant, name, email string, role enum.Role, deviceHash string) (id int, securityStamp string, err error) {
+	stamp := generateSecurityStamp()
+
+	columns := "name, email, created_at, tenant_id, role, status, avatar_type, avatar_bkey, security_stamp"
+	placeholders := "$1, $2, $3, $4, $5, $6, $7, '', $8"
+	conflict := ""
+	args := []any{name, email, time.Now(), tenant.ID, role, enum.UserActive, enum.AvatarTypeGravatar, stamp}
+	if deviceHash != "" {
+		columns += ", device_hash"
+		placeholders += ", $9"
+		args = append(args, deviceHash)
+		conflict = " ON CONFLICT (tenant_id, device_hash) DO NOTHING"
+	}
+
+	if err := trx.Get(&id, "INSERT INTO users ("+columns+") VALUES ("+placeholders+")"+conflict+" RETURNING id", args...); err != nil {
+		return 0, "", err
+	}
+	return id, stamp, nil
+}
+
 func countUsers(ctx context.Context, q *query.CountUsers) error {
 	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, user *entity.User) error {
 		var count int
@@ -244,12 +267,12 @@ func registerUser(ctx context.Context, c *cmd.RegisterUser) error {
 		now := time.Now()
 		c.User.Status = enum.UserActive
 		c.User.Email = strings.ToLower(strings.TrimSpace(c.User.Email))
-		stamp := generateSecurityStamp()
-		if err := trx.Get(&c.User.ID,
-			"INSERT INTO users (name, email, created_at, tenant_id, role, status, avatar_type, avatar_bkey, security_stamp) VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8) RETURNING id",
-			c.User.Name, c.User.Email, now, tenant.ID, c.User.Role, enum.UserActive, enum.AvatarTypeGravatar, stamp); err != nil {
+
+		id, stamp, err := insertUser(trx, tenant, c.User.Name, c.User.Email, c.User.Role, "")
+		if err != nil {
 			return errors.Wrap(err, "failed to register new user")
 		}
+		c.User.ID = id
 		c.User.SecurityStamp = stamp
 
 		for _, provider := range c.User.Providers {

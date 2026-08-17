@@ -1,0 +1,268 @@
+# Mobile Feedback & Widget API
+
+## Status
+
+**Implemented (backend).** The feedback widget and mobile client sign-in channel is
+live in this repository. There is **no widget UI** yet — the server only exposes the
+authentication, token-management and rate-limiting surface that clients build on.
+Data operations (posts, comments, votes) are out of scope for this channel for now
+and are **not** exposed under `/widget/*`.
+
+## 1. Overview
+
+The widget/mobile channel lets third-party clients (an embedded feedback widget on a
+customer site, or a native mobile app) authenticate against a Fider tenant **without
+a browser, cookies or a password**. Three mechanisms:
+
+1. **Widget tokens** — per-tenant secrets created by administrators. A client proves
+   possession by sending the raw token together with a stable **device ID**. This
+   signs the device in as a scoped **device user** (role Visitor) and the server
+   responds with a long-lived Fider JWT.
+2. **ID tokens** — for native/mobile apps: the client presents an OIDC **id_token**
+   (Google, Apple, etc.) issued to the tenant's client; Fider verifies it against the
+   configured JWKS/issuer and signs the matching user in.
+3. **Signed-in JWT** — after sign-in the client holds a Fider JWT
+   (`Authorization: Bearer <jwt>`) valid for 365 days.
+
+## 2. Backend implementation
+
+### 2.1 Database (migration `202608171200_add_widget_tokens`)
+
+```sql
+CREATE TABLE widget_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    tenant_id    INTEGER NOT NULL REFERENCES tenants (id),
+    token_hash   TEXT NOT NULL,
+    label        TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ,
+    UNIQUE (tenant_id, token_hash)
+);
+
+CREATE INDEX widget_tokens_tenant_id_idx ON widget_tokens (tenant_id);
+
+ALTER TABLE users ADD COLUMN device_hash TEXT;
+CREATE UNIQUE INDEX users_tenant_device_hash_idx ON users (tenant_id, device_hash);
+```
+
+- **Tokens are stored hashed** (`SHA-256` of the raw value). The raw value is shown
+  once at creation time and can never be retrieved afterwards.
+- **Device users** are ordinary `users` rows with `device_hash` set and role
+  `Visitor`. `(tenant_id, device_hash)` is unique, so a re-sign-in from the same
+  device resolves to the same user.
+
+### 2.2 Configuration (env vars)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WIDGET_ENABLED` | `true` | Mounts the `/widget/*` route group |
+| `WIDGET_RATE_LIMIT` | `120` | Max requests per tenant per minute |
+| `WIDGET_IDTOKEN_JWKS_URL` | — | JWKS endpoint for id_token verification |
+| `WIDGET_IDTOKEN_ISSUER` | — | Expected `iss` claim |
+| `WIDGET_IDTOKEN_CLIENT_ID` | — | Expected `aud` claim |
+
+`WIDGET_IDTOKEN_*` are only needed if native id_token sign-in is used.
+
+### 2.3 Middleware chain (route group)
+
+```go
+widget := r.Group()
+widget.Use(middlewares.WidgetCORS())     // CORS for cross-origin clients
+widget.Use(middlewares.WidgetRateLimit()) // per-tenant sliding-window limiter
+widget.Use(middlewares.WidgetAuth())      // credential resolution
+```
+
+**`WidgetAuth`** (see `app/middlewares/widget_auth.go`) resolves the caller from one
+of:
+
+| Method | Credentials |
+| --- | --- |
+| Bearer JWT | `Authorization: Bearer <fider-jwt>` → signs in the token's user |
+| Widget token + device | `X-Widget-Token: <raw>` + `X-Widget-UDID: <device-id>` → signs in the device user |
+
+- The `/widget/signin` path is exempt from authentication (it *is* the login).
+- Token/device mismatch, unknown device, or a revoked token → `401`.
+- `X-Widget-UDID` must be 8–128 chars.
+
+**`WidgetRateLimit`** (see `app/middlewares/widget_rate_limit.go`) applies a sliding
+window of 1 minute per tenant; exceeding `WIDGET_RATE_LIMIT` → `429`.
+
+**`WidgetCORS`** (see `app/middlewares/cors.go`):
+`Access-Control-Allow-Origin: *`, `GET, POST, OPTIONS`, headers
+`Content-Type, Authorization, X-Widget-Token, X-Widget-UDID`, `Max-Age: 86400`.
+Preflight `OPTIONS` returns `200` immediately.
+
+## 3. API surface
+
+All endpoints are public/unauthenticated except where noted.
+
+| Method | Path | Middlewares | Description |
+| --- | --- | --- | --- |
+| `POST` | `/widget/signin` | CORS, RateLimit | Sign in a device user or via id_token → returns JWT |
+| `GET` | `/widget/signout` | CORS, RateLimit, Auth | Acknowledge sign-out (client discards token) |
+| `GET` | `/api/v1/admin/widgets/tokens` | **admin** | List widget tokens |
+| `POST` | `/api/v1/admin/widgets/tokens` | **admin** | Create a widget token |
+| `DELETE` | `/api/v1/admin/widgets/tokens/:id` | **admin** | Revoke a widget token |
+
+### 3.1 `POST /widget/signin`
+
+Request body:
+
+```json
+{
+  "token": "<raw-widget-token>",
+  "udid": "<stable-device-id>",
+  "name": "My Device",      // optional, default ""
+  "email": "",              // optional, default ""
+  "id_token": "<oidc-id-token>" // optional; when present, token/udid are ignored
+}
+```
+
+- **Device path:** `token` + `udid` required. `token` is validated (hash lookup,
+  not revoked); the device user is created/fetched by `udid` and signed in.
+- **id_token path:** `id_token` must verify against the configured JWKS/issuer/aud
+  (provider name `idtoken`). The user is matched by provider UID, then by email,
+  otherwise a new Visitor user is registered.
+
+Success `200`:
+
+```json
+{
+  "token": "<fider-jwt-365d>",
+  "user": {
+    "id": 42,
+    "name": "My Device",
+    "email": "",
+    "role": 3,
+    "tenant": 1
+  }
+}
+```
+
+Errors:
+
+| Status | Body | Cause |
+| --- | --- | --- |
+| `400` | `{"errors":{"token":"token and udid are required"}}` | Missing `token`/`udid` on device path |
+| `401` | — | Invalid or revoked widget token |
+| `422` | `{"error":"..."}` | Invalid `id_token`, or id_token sign-in not configured |
+| `429` | `{"error":"Too Many Requests"}` | Tenant rate limit exceeded |
+
+### 3.2 `GET /widget/signout`
+
+Requires valid credentials. Returns `200 {}`. The server keeps nothing per-session;
+the client is expected to discard its stored JWT.
+
+### 3.3 Admin token management
+
+`POST /api/v1/admin/widgets/tokens` — body `{"label": "iOS app"}` → `200`:
+
+```json
+{
+  "id": 7,
+  "label": "iOS app",
+  "token": "<raw-token-shown-once>"
+}
+```
+
+`GET /api/v1/admin/widgets/tokens` → `200`:
+
+```json
+{
+  "tokens": [
+    { "id": 7, "label": "iOS app", "createdAt": "...", "lastUsedAt": null, "revokedAt": null }
+  ]
+}
+```
+
+Raw tokens are never returned by list — only `id`, `label`, `createdAt`,
+`lastUsedAt`, `revokedAt`.
+
+`DELETE /api/v1/admin/widgets/tokens/:id` → `200 {}`. Revoked tokens fail all
+subsequent sign-in/auth attempts. `403` if the id does not belong to the tenant.
+
+## 4. Client specification
+
+### 4.1 Embedded widget (device user)
+
+1. Obtain a widget token out-of-band (admin API or future admin UI) and bake it into
+   the widget build. It is a 32-char base62 secret — treat like a password; it must
+   not ship with per-user privilege.
+2. Generate a **stable device id** (`udid`) on first launch — a UUID v4 stored
+   locally. Do **not** regenerate per request (that would create a new device user
+   each time).
+3. **Sign in** once per launch:
+
+   ```
+   POST /widget/signin
+   Content-Type: application/json
+   { "token": "<widget-token>", "udid": "<device-id>", "name": "Chrome on macOS" }
+   ```
+
+   Store the returned `token` (JWT). On `401` (revoked token) drop the stored JWT and
+   surface "widget not configured".
+4. **Authenticated requests** send either:
+   - `Authorization: Bearer <jwt>`, or
+   - statelessly, `X-Widget-Token` + `X-Widget-UDID` headers.
+   (JWT is preferred: cheaper, and works after token rotation.)
+5. **Sign out** — `GET /widget/signout` with credentials, then delete the JWT. The
+   device user and widget token remain valid; re-sign-in uses the same `udid`.
+
+### 4.2 Native mobile app (id_token)
+
+1. Configure `WIDGET_IDTOKEN_JWKS_URL`, `WIDGET_IDTOKEN_ISSUER`,
+   `WIDGET_IDTOKEN_CLIENT_ID` on the server and add the app as an OIDC client.
+2. On launch (or when the stored JWT is expired/invalid), obtain an id_token from the
+   OS sign-in flow (Google/Apple Sign-In).
+3. Sign in:
+
+   ```
+   POST /widget/signin
+   Content-Type: application/json
+   { "id_token": "<oidc-id-token>" }
+   ```
+
+   Store the returned Fider JWT and reuse it until it fails.
+4. Optionally persist the user (name/email) from the `user` field for display.
+
+### 4.3 Retry & error handling
+
+| Status | Action |
+| --- | --- |
+| `200` | Store JWT |
+| `400` | Bug in client request; log |
+| `401` | Credentials invalid/revoked — show "widget not configured" or re-run sign-in flow |
+| `422` | id_token rejected (expired / wrong audience) — re-trigger native sign-in |
+| `429` | **Back off exponentially** (respect `Retry-After` if present); do not retry in a tight loop |
+
+### 4.4 Security notes
+
+- Server only stores `SHA-256` hashes of widget tokens — a DB leak does not leak
+  usable tokens.
+- JWT expiry is 365 days; clients should be prepared for 401 at any time and
+  re-sign-in.
+- Device users are role `Visitor` — they cannot administer anything. Raise
+  privilege via the normal member/admin flow if a device user needs more.
+- `Access-Control-Allow-Origin: *` is intentional (arbitrary customer sites embed the
+  widget) — credentials are carried in headers, never cookies.
+
+## 5. Client implementation checklist
+
+- [ ] Admin-created widget token available to the client (env/secret/config).
+- [ ] Stable per-install `udid` generated and persisted.
+- [ ] `POST /widget/signin` implemented with both token/udid and id_token paths.
+- [ ] JWT stored; attached as `Authorization: Bearer` on widget requests.
+- [ ] 401 → re-sign-in; 429 → exponential backoff; 422 → refresh id_token.
+- [ ] Sign-out clears the stored JWT.
+- [ ] Revoked-token UX ("widget not configured") surfaced to the user.
+
+## 6. Not implemented (removed / future work)
+
+The originally-proposed read/write data routes under `/api/v1/widget/*` (posts,
+comments, votes, reactions, tags, subscriptions, search) are **not part of this
+change** — there is no widget UI consuming them yet, and they would duplicate the
+existing member API. When the embedded widget UI is built, those endpoints can be
+re-added under the same `/widget/*` group (behind `WidgetAuth`) or the widget JWT can
+be accepted by the existing `/api/v1/*` member routes. Until then the implemented
+surface (sign-in, sign-out, token lifecycle, rate limiting) is the contract.

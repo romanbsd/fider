@@ -49,22 +49,13 @@ func User() web.MiddlewareFunc {
 					return next(c)
 				}
 
-				// Scope the lookup to the tenant selected by the request host. A globally
-				// valid user ID that belongs to a different tenant must resolve to "not
-				// found" so a token cannot be replayed across tenant boundaries.
-				tenantID := 0
-				if c.Tenant() != nil {
-					tenantID = c.Tenant().ID
-				}
-				userByClaimsID := &query.GetUserByID{UserID: claims.UserID, TenantID: tenantID}
-				err = bus.Dispatch(c, userByClaimsID)
-				user = userByClaimsID.Result
+				user, err = findUserByClaims(c, claims)
 				if err != nil {
-					if errors.Cause(err) == app.ErrNotFound {
-						c.RemoveCookie(web.CookieAuthName)
-						return next(c)
-					}
 					return err
+				}
+				if user == nil {
+					c.RemoveCookie(web.CookieAuthName)
+					return next(c)
 				}
 
 				// Security stamp check: if the JWT contains a stamp (new tokens only),
@@ -72,7 +63,7 @@ func User() web.MiddlewareFunc {
 				// security-relevant data has changed (e.g. role changed, account blocked,
 				// or OAuth allowed-roles updated) and they must re-authenticate so that
 				// access controls are re-evaluated.
-				if claims.SecurityStamp != "" && user != nil && claims.SecurityStamp != user.SecurityStamp {
+				if claims.SecurityStamp != "" && claims.SecurityStamp != user.SecurityStamp {
 					c.RemoveCookie(web.CookieAuthName)
 					if c.IsAjax() {
 						return c.JSON(401, web.Map{})
@@ -87,10 +78,7 @@ func User() web.MiddlewareFunc {
 					return c.Redirect("/signin")
 				}
 			} else if c.Request.IsAPI() {
-				authHeader := c.Request.GetHeader("Authorization")
-				parts := strings.Split(authHeader, "Bearer")
-				if len(parts) == 2 {
-					apiKey := strings.TrimSpace(parts[1])
+				if apiKey, err := web.BearerToken(c.Request.GetHeader("Authorization")); err == nil {
 					getUserByAPIKey := &query.GetUserByAPIKey{APIKey: apiKey}
 					err = bus.Dispatch(c, getUserByAPIKey)
 					if err != nil {
@@ -147,4 +135,24 @@ func User() web.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+// findUserByClaims loads the user referenced by Fider claims, scoped to the tenant
+// selected by the request host. A user ID that belongs to a different tenant must
+// resolve to "no user" so a token cannot be replayed across tenant boundaries.
+// Returns nil, nil when there is no such user.
+func findUserByClaims(c *web.Context, claims *jwt.FiderClaims) (*entity.User, error) {
+	tenantID := 0
+	if c.Tenant() != nil {
+		tenantID = c.Tenant().ID
+	}
+
+	byID := &query.GetUserByID{UserID: claims.UserID, TenantID: tenantID}
+	if err := bus.Dispatch(c, byID); err != nil {
+		if errors.Cause(err) == app.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return byID.Result, nil
 }

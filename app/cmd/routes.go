@@ -77,6 +77,18 @@ func routes(r *web.Engine) *web.Engine {
 		stripeWh.Post("/webhooks/stripe", webhooks.IncomingStripeWebhook())
 	}
 
+	// Feedback widget + mobile API (before CSRF middleware, cross-origin clients)
+	if env.Config.Widget.Enabled {
+		widget := r.Group()
+		{
+			widget.Use(middlewares.WidgetCORS())
+			widget.Use(middlewares.WidgetRateLimit())
+			widget.Use(middlewares.WidgetAuth())
+			widget.Post("/widget/signin", apiv1.WidgetSignIn())
+			widget.Get("/widget/signout", apiv1.WidgetSignOut())
+		}
+	}
+
 	r.Use(middlewares.CSRF())
 
 	r.Get("/terms", handlers.LegalPage("Terms of Service", "terms.md"))
@@ -318,6 +330,9 @@ func routes(r *web.Engine) *web.Engine {
 
 		adminApi.Use(middlewares.BlockLockedTenants())
 		adminApi.Delete("/api/v1/posts/:number", apiv1.DeletePost())
+		adminApi.Get("/api/v1/admin/widgets/tokens", apiv1.ListWidgetTokens())
+		adminApi.Post("/api/v1/admin/widgets/tokens", apiv1.CreateWidgetToken())
+		adminApi.Delete("/api/v1/admin/widgets/tokens/:id", apiv1.RevokeWidgetToken())
 	}
 
 	return r
