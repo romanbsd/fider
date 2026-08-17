@@ -209,10 +209,10 @@ the tenant.
 4. **Authenticated requests** send `Authorization: Bearer <jwt>`. The JWT is
    accepted by the **existing `/api/v1/*` member API** (posts, comments, votes,
    subscriptions, settings) with the signed-in user's real role; device users
-   (Widget Visitor) can vote and create posts on public communities. Sending the
-   JWT instead of the raw widget-token headers avoids re-validating the token on
-   every request. Note that a revoked widget token invalidates any JWT issued
-   from it (each device JWT is bound to its token — see
+   (Widget Visitor) can vote and create posts on public communities. The server
+   re-checks — on every authenticated request — that the widget token the JWT was
+   issued from is still active, so revoking a token immediately invalidates the
+   JWTs tied to it (see
    [4.4 Security notes](#44-security-notes)).
 5. **Sign out** — `GET /widget/signout` with credentials, then delete the JWT. The
    device user and widget token remain valid; re-sign-in uses the same `udid`.

@@ -54,24 +54,33 @@ func WidgetRateLimit() web.MiddlewareFunc {
 	}
 }
 
-// clientIP returns the caller address, honouring X-Forwarded-For when the
-// request arrives through a reverse proxy (the first entry is the original
-// client). Falls back to RemoteAddr otherwise. When running behind a proxy this
-// keeps per-client buckets distinct instead of grouping every caller under the
+// clientIP returns the caller address. `X-Forwarded-For` is honoured only when
+// the direct socket peer is a private/loopback address (i.e. our own reverse
+// proxy); otherwise an end client could spoof it. Falls back to the peer address
+// so per-client buckets stay distinct instead of grouping every caller under the
 // proxy address.
 func clientIP(remoteAddr, forwardedFor string) string {
-	if forwardedFor != "" {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+
+	if forwardedFor != "" && isTrustedProxy(host) {
 		if first, _, ok := strings.Cut(forwardedFor, ","); ok {
 			return strings.TrimSpace(first)
 		}
 		return strings.TrimSpace(forwardedFor)
 	}
 
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		return remoteAddr
-	}
 	return host
+}
+
+func isTrustedProxy(peer string) bool {
+	ip := net.ParseIP(peer)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // WidgetAuth authenticates requests coming from the feedback widget (a tenant
