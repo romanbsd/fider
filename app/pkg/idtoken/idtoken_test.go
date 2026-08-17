@@ -337,3 +337,54 @@ func TestValidator_ConcurrentUnknownKid_CoalescesFetch(t *testing.T) {
 	defer mu.Unlock()
 	Expect(hits).Equals(1)
 }
+
+// TestValidator_LeaderContextCancelled_DoesNotAbortSharedRefresh guards
+// against passing a caller-specific context into the coalesced fetch:
+// whichever caller happens to be the singleflight leader is arbitrary, so if
+// its context were used, cancelling that one request (e.g. a disconnected
+// client) would abort the in-flight HTTP call and fail every other
+// coalesced caller too — including unrelated tenants' sign-ins. The shared
+// fetch must run independent of any single caller's context.
+func TestValidator_LeaderContextCancelled_DoesNotAbortSharedRefresh(t *testing.T) {
+	RegisterT(t)
+
+	_, pub := generateTestKeys()
+
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		jwksHandler(pub)(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	validator := New(Config{JWKSURL: server.URL, Issuer: testIssuer, ClientID: testAudience})
+
+	const concurrency = 5
+	var wg sync.WaitGroup
+	errs := make([]error, concurrency)
+
+	cancellableCtx, cancel := context.WithCancel(context.Background())
+	for i := range concurrency {
+		wg.Add(1)
+		ctx := context.Background()
+		if i == 0 {
+			ctx = cancellableCtx // the caller whose context we'll cancel mid-fetch
+		}
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = validator.getKey(ctx, testKid)
+		}(i)
+	}
+
+	// give every goroutine a chance to join the same in-flight fetch before
+	// cancelling one of their contexts
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	for _, err := range errs {
+		Expect(err).IsNil()
+	}
+}

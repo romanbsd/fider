@@ -1,6 +1,9 @@
 package postgres_test
 
 import (
+	"context"
+	"net/url"
+	"sync"
 	"testing"
 
 	"github.com/getfider/fider/app"
@@ -8,7 +11,9 @@ import (
 	"github.com/getfider/fider/app/models/entity"
 	"github.com/getfider/fider/app/models/query"
 	"github.com/getfider/fider/app/pkg/bus"
+	"github.com/getfider/fider/app/pkg/dbx"
 	"github.com/getfider/fider/app/pkg/errors"
+	"github.com/getfider/fider/app/pkg/web"
 
 	. "github.com/getfider/fider/app/pkg/assert"
 )
@@ -177,4 +182,90 @@ func TestWidgetTokenStorage_DeviceUser_EmailCollision(t *testing.T) {
 	Expect(second.Created).IsTrue()
 	Expect(second.Result.Email).Equals("")
 	Expect(second.Result.ID).NotEquals(first.Result.ID)
+}
+
+// TestWidgetTokenStorage_DeviceUser_ConcurrentFirstRegistration documents
+// and guards the outcome when two requests race a device's very first
+// registration (e.g. a client's own retried request, or a caller replaying
+// a known/guessed device_hash before its legitimate owner ever registers):
+// insertUser's ON CONFLICT (tenant_id, device_hash) DO NOTHING already makes
+// this deterministic at the database level — exactly one request wins and
+// gets the device secret, every other one gets a clean
+// app.ErrDeviceSecretMismatch (since it presented no secret for what the
+// database now considers an existing device), never a torn/corrupted row.
+//
+// ponytail: this does NOT give the losing caller any way to recover the
+// winner's identity — inherent to a bare device_hash claim. Malicious
+// exploitation requires knowing a specific target's device_hash before its
+// first-ever use, which for a properly random UUID v4 udid (as documented)
+// is computationally infeasible; the same assumption the existing
+// docs/MOBILE_FEEDBACK_API.md security notes already rely on. Closing the
+// remaining self-race (a client's own duplicate first-launch request)
+// requires a client-supplied idempotency token, a bigger protocol change,
+// upgrade if this proves to matter in practice.
+//
+// Unlike every other test in this file, each goroutine here uses its own
+// connection/transaction: the shared per-test transaction (demoTenantCtx)
+// can't be used concurrently (Postgres doesn't support concurrent use of one
+// connection), so this commits directly and cleans up manually instead of
+// relying on TeardownDatabaseTest's rollback.
+func TestWidgetTokenStorage_DeviceUser_ConcurrentFirstRegistration(t *testing.T) {
+	SetupDatabaseTest(t)
+	defer TeardownDatabaseTest()
+
+	u, _ := url.Parse("http://cdn.test.fider.io")
+	base := context.WithValue(context.Background(), app.RequestCtxKey, web.Request{URL: u})
+
+	t.Cleanup(func() {
+		cleanup, _ := dbx.BeginTx(base)
+		_, _ = cleanup.Execute("DELETE FROM users WHERE device_hash = $1", "device-race")
+		cleanup.MustCommit()
+	})
+
+	const concurrency = 8
+	results := make([]*cmd.RegisterDeviceUser, concurrency)
+	errs := make([]error, concurrency)
+
+	var wg sync.WaitGroup
+	for i := range concurrency {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			connTrx, err := dbx.BeginTx(base)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			ctx := withTenant(context.WithValue(base, app.TransactionCtxKey, connTrx), demoTenant)
+
+			c := &cmd.RegisterDeviceUser{DeviceHash: "device-race", Name: "Racer"}
+			errs[i] = bus.Dispatch(ctx, c)
+			results[i] = c
+			if errs[i] == nil {
+				connTrx.MustCommit()
+			} else {
+				connTrx.MustRollback()
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	winners := 0
+	var winnerID int
+	for i := range concurrency {
+		if errs[i] == nil {
+			winners++
+			Expect(results[i].Created).IsTrue()
+			Expect(results[i].NewDeviceSecret).NotEquals("")
+			winnerID = results[i].Result.ID
+		} else {
+			Expect(errors.Cause(errs[i])).Equals(app.ErrDeviceSecretMismatch)
+		}
+	}
+	Expect(winners).Equals(1)
+
+	getByDevice := &query.GetUserByDeviceHash{DeviceHash: "device-race"}
+	err := bus.Dispatch(demoTenantCtx, getByDevice)
+	Expect(err).IsNil()
+	Expect(getByDevice.Result.ID).Equals(winnerID)
 }

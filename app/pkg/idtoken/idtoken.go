@@ -168,8 +168,14 @@ func (v *Validator) getKey(ctx context.Context, kid string) (*rsa.PublicKey, err
 	// fails closed: a stale key is never served past its TTL. Concurrent
 	// refreshes are coalesced into a single in-flight fetch instead of each
 	// caller hitting the JWKS endpoint independently.
+	//
+	// The fetch runs with context.Background(), not the caller's ctx: whichever
+	// caller happens to be the singleflight leader is otherwise arbitrary, and
+	// cancelling *that one's* request (e.g. a disconnected client) would abort
+	// the shared fetch and fail every other coalesced caller too, including
+	// unrelated tenants' sign-ins. The client's own 10s timeout still bounds it.
 	if _, err, _ := v.sf.Do("fetch", func() (any, error) {
-		return nil, v.fetchKeys(ctx)
+		return nil, v.fetchKeys(context.Background())
 	}); err != nil {
 		return nil, err
 	}
