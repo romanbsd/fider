@@ -42,14 +42,20 @@ type jwks struct {
 	Keys []jwk `json:"keys"`
 }
 
+// keySetTTL bounds how long a fetched JWKS is trusted before the provider key
+// set is refreshed.
+const keySetTTL = time.Hour
+
 // Validator verifies identity provider tokens signed by a JWKS endpoint.
-// The keyset is fetched lazily and cached for the validators lifetime.
+// The keyset is fetched lazily and refreshed periodically or when a token
+// references an unknown key, so provider key rotation is picked up without a
+// process restart.
 type Validator struct {
-	cfg       Config
-	client    *http.Client
-	mu        sync.Mutex
-	keys      map[string]*rsa.PublicKey
-	hasLoaded bool
+	cfg      Config
+	client   *http.Client
+	mu       sync.Mutex
+	keys     map[string]*rsa.PublicKey
+	lastLoad time.Time
 }
 
 // New creates a Validator for the given provider configuration
@@ -84,6 +90,10 @@ func (v *Validator) Verify(ctx context.Context, token string) (*Claims, error) {
 
 	if err := claims.Valid(); err != nil {
 		return nil, errors.Wrap(err, "identity provider token claims failed validation")
+	}
+
+	if _, ok := claims["exp"]; !ok {
+		return nil, errors.New("identity provider token does not have an expiration claim")
 	}
 
 	issuer, _ := claims["iss"].(string)
@@ -140,10 +150,20 @@ func (v *Validator) getKey(ctx context.Context, kid string) (*rsa.PublicKey, err
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	if !v.hasLoaded {
-		if err := v.fetchKeys(ctx); err != nil {
-			return nil, err
+	// Serve from cache while the key set is fresh.
+	if key, ok := v.keys[kid]; ok && time.Since(v.lastLoad) < keySetTTL {
+		return key, nil
+	}
+
+	// Refresh on an unknown kid or a stale key set so provider key rotation is
+	// picked up without a restart. The key set is replaced only after a
+	// successful fetch, so removed keys stop validating tokens.
+	if err := v.fetchKeys(ctx); err != nil {
+		// Keep serving a previously cached key when a refresh fails.
+		if key, ok := v.keys[kid]; ok {
+			return key, nil
 		}
+		return nil, err
 	}
 
 	if key, ok := v.keys[kid]; ok {
@@ -162,7 +182,7 @@ func (v *Validator) fetchKeys(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to fetch identity provider keyset")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return errors.New("failed to fetch identity provider keyset: unexpected status code %d", resp.StatusCode)
@@ -173,6 +193,7 @@ func (v *Validator) fetchKeys(ctx context.Context) error {
 		return errors.Wrap(err, "failed to parse identity provider keyset")
 	}
 
+	fresh := make(map[string]*rsa.PublicKey, len(set.Keys))
 	for _, key := range set.Keys {
 		if key.Kty != "RSA" || key.Use != "sig" {
 			continue
@@ -182,13 +203,15 @@ func (v *Validator) fetchKeys(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
-		v.keys[key.Kid] = pub
+		fresh[key.Kid] = pub
 	}
 
-	v.hasLoaded = true
-	if len(v.keys) == 0 {
+	if len(fresh) == 0 {
 		return errors.New("identity provider keyset did not contain any usable keys")
 	}
+
+	v.keys = fresh
+	v.lastLoad = time.Now()
 	return nil
 }
 

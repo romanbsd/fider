@@ -16,6 +16,7 @@ import (
 	"github.com/getfider/fider/app/pkg/jwt"
 	"github.com/getfider/fider/app/pkg/mock"
 	"github.com/getfider/fider/app/pkg/web"
+	"github.com/getfider/fider/app/pkg/widgettoken"
 )
 
 var testDeviceUser = &entity.User{
@@ -64,7 +65,7 @@ func TestWidgetAuth_WidgetToken(t *testing.T) {
 	})
 
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		if q.DeviceHash == "device-0x123" {
+		if q.DeviceHash == widgettoken.DeviceHash("device-0x123") {
 			q.Result = testDeviceUser
 			return nil
 		}

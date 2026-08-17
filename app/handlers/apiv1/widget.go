@@ -94,7 +94,7 @@ func signInByWidgetToken(c *web.Context, input *widgetSignInInput) (*entity.User
 	}
 
 	register := &cmd.RegisterDeviceUser{
-		DeviceHash: input.UDID,
+		DeviceHash: widgettoken.DeviceHash(input.UDID),
 		Name:       input.Name,
 		Email:      input.Email,
 	}
@@ -113,6 +113,9 @@ func signInByIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {
 	claims, err := idTokenValidator.Verify(c, rawIDToken)
 	if err != nil {
 		return nil, errors.New("Invalid id_token")
+	}
+	if !claims.EmailVerified {
+		return nil, errors.New("id_token email is not verified")
 	}
 
 	const provider = "idtoken"

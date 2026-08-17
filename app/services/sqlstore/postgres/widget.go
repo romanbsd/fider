@@ -19,18 +19,20 @@ func createWidgetToken(ctx context.Context, c *cmd.CreateWidgetToken) error {
 	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, user *entity.User) error {
 		rawToken := entity.GenerateWidgetToken()
 		hash := entity.HashWidgetToken(rawToken)
+		now := time.Now()
 
 		var id int
 		if err := trx.Get(&id,
 			"INSERT INTO widget_tokens (tenant_id, token_hash, label, created_at) VALUES ($1, $2, $3, $4) RETURNING id",
-			tenant.ID, hash, strings.TrimSpace(c.Label), time.Now()); err != nil {
+			tenant.ID, hash, strings.TrimSpace(c.Label), now); err != nil {
 			return errors.Wrap(err, "failed to create widget token")
 		}
 
 		c.Result = &entity.WidgetToken{
-			ID:    id,
-			Label: strings.TrimSpace(c.Label),
-			Hash:  hash,
+			ID:        id,
+			Label:     strings.TrimSpace(c.Label),
+			Hash:      hash,
+			CreatedAt: now,
 		}
 
 		// The raw token is only available in the response once, at creation.
@@ -67,8 +69,8 @@ func listWidgetTokens(ctx context.Context, q *query.ListWidgetTokens) error {
 		if err := trx.Select(&tokens, `
 			SELECT id, label, token_hash, created_at, last_used_at, revoked_at
 			FROM widget_tokens
-			WHERE tenant_id = $1
-			ORDER BY created_at`, tenant.ID); err != nil {
+			WHERE tenant_id = $1 AND revoked_at IS NULL
+			ORDER BY created_at, id`, tenant.ID); err != nil {
 			return errors.Wrap(err, "failed to list widget tokens")
 		}
 

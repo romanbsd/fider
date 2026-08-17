@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -128,6 +129,17 @@ func TestValidator_Expired(t *testing.T) {
 	Expect(err).IsNotNil()
 }
 
+func TestValidator_MissingExp(t *testing.T) {
+	RegisterT(t)
+	validator, priv := newValidator(t)
+
+	_, err := validator.Verify(context.Background(), signToken(priv, func(c jwtgo.MapClaims) {
+		delete(c, "exp")
+	}))
+	Expect(err).IsNotNil()
+	Expect(errors.Cause(err).Error()).ContainsSubstring("expiration")
+}
+
 func TestValidator_UnknownKey(t *testing.T) {
 	RegisterT(t)
 	validator, priv := newValidator(t)
@@ -172,4 +184,71 @@ func TestValidator_IsConfigured(t *testing.T) {
 
 	empty := New(Config{})
 	Expect(empty.IsConfigured()).IsFalse()
+}
+
+func TestValidator_KeyRotation(t *testing.T) {
+	RegisterT(t)
+
+	priv1, pub1 := generateTestKeys()
+	priv2, pub2 := generateTestKeys()
+
+	var (
+		mu   sync.Mutex
+		keys = map[string]*rsa.PublicKey{"key-1": pub1}
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		encoded := make([]jwk, 0, len(keys))
+		for kid, pub := range keys {
+			encoded = append(encoded, jwk{
+				Kty: "RSA", Kid: kid, Use: "sig", Alg: "RS256",
+				N: base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+				E: base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
+			})
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			Keys []jwk `json:"keys"`
+		}{Keys: encoded})
+	}))
+	t.Cleanup(server.Close)
+
+	validator := New(Config{JWKSURL: server.URL, Issuer: testIssuer, ClientID: testAudience})
+
+	signWith := func(kid string, priv *rsa.PrivateKey) string {
+		token := jwtgo.NewWithClaims(jwtgo.SigningMethodRS256, jwtgo.MapClaims{
+			"iss":            testIssuer,
+			"aud":            testAudience,
+			"sub":            "user-subject-1",
+			"email":          "jane@example.com",
+			"email_verified": true,
+			"name":           "Jane Doe",
+			"exp":            time.Now().Add(15 * time.Minute).Unix(),
+		})
+		token.Header["kid"] = kid
+		signed, err := token.SignedString(priv)
+		Expect(err).IsNil()
+		return signed
+	}
+
+	ctx := context.Background()
+
+	// token signed with the initially published key verifies
+	_, err := validator.Verify(ctx, signWith("key-1", priv1))
+	Expect(err).IsNil()
+
+	// provider rotates to a new key: token signed with the new key must verify
+	// without a restart
+	mu.Lock()
+	keys = map[string]*rsa.PublicKey{"key-2": pub2}
+	mu.Unlock()
+
+	_, err = validator.Verify(ctx, signWith("key-2", priv2))
+	Expect(err).IsNil()
+
+	// the removed key must no longer validate tokens
+	_, err = validator.Verify(ctx, signWith("key-1", priv1))
+	Expect(err).IsNotNil()
+	Expect(errors.Cause(err).Error()).ContainsSubstring("keyset does not contain")
 }

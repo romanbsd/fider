@@ -37,3 +37,21 @@ func TestBearerToken_Invalid(t *testing.T) {
 		t.Fatal("expected error for empty token")
 	}
 }
+
+func TestBearerToken_CaseInsensitiveScheme(t *testing.T) {
+	token, err := web.BearerToken("bearer abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "abc123" {
+		t.Fatalf("expected abc123, got %s", token)
+	}
+
+	token, err = web.BearerToken("bEaReR abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "abc123" {
+		t.Fatalf("expected abc123, got %s", token)
+	}
+}

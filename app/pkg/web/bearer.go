@@ -8,13 +8,12 @@ import (
 
 // BearerToken extracts the token from an "Authorization: Bearer <token>" header value.
 func BearerToken(authorization string) (string, error) {
-	const prefix = "Bearer "
-
-	auth := strings.TrimSpace(authorization)
-	if !strings.HasPrefix(auth, prefix) {
+	parts := strings.Fields(authorization)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return "", errors.New("missing bearer token")
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
+
+	token := strings.TrimSpace(parts[1])
 	if token == "" {
 		return "", errors.New("empty bearer token")
 	}

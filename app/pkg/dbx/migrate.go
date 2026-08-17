@@ -96,12 +96,29 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 		return errors.Wrap(err, "failed to read file '%s'", filePath)
 	}
 
+	sql := string(content)
+	if strings.Contains(strings.ToUpper(sql), "CONCURRENTLY") {
+		// CREATE INDEX CONCURRENTLY cannot run inside a transaction (nor share an
+		// implicit transaction with other statements), so the statements of this
+		// migration run one at a time, each in its own implicit transaction.
+		for _, statement := range splitStatements(sql) {
+			if _, err := conn.Exec(statement); err != nil {
+				return errors.Wrap(err, "failed to run migration '%s'", fileName)
+			}
+		}
+
+		if _, err := conn.Exec("INSERT INTO migrations_history (version, filename) VALUES ($1, $2)", version, fileName); err != nil {
+			return errors.Wrap(err, "failed to record migration '%s'", fileName)
+		}
+		return nil
+	}
+
 	trx, err := BeginTx(ctx)
 	if err != nil {
 		return err
 	}
 
-	_, err = trx.tx.Exec(string(content))
+	_, err = trx.tx.Exec(sql)
 	if err != nil {
 		return err
 	}
@@ -112,6 +129,88 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 	}
 
 	return trx.Commit()
+}
+
+// splitStatements splits a SQL script into individual statements, honouring
+// single-quoted literals and dollar-quoted strings, so statements can be run
+// outside a transaction (e.g. CREATE INDEX CONCURRENTLY).
+func splitStatements(script string) []string {
+	var (
+		statements []string
+		start      int
+		i          int
+	)
+
+	for i < len(script) {
+		switch script[i] {
+		case '\'':
+			for {
+				end := strings.IndexByte(script[i+1:], '\'')
+				if end == -1 {
+					i = len(script)
+					break
+				}
+				i += end + 1
+				if i+1 < len(script) && script[i+1] == '\'' {
+					// escaped quote inside the literal
+					i++
+					continue
+				}
+				i++
+				break
+			}
+		case '$':
+			if tag, ok := dollarQuoteTag(script, i); ok {
+				end := strings.Index(script[i+len(tag):], tag)
+				if end == -1 {
+					i = len(script)
+				} else {
+					i += len(tag) + end + len(tag)
+				}
+			} else {
+				i++
+			}
+		case ';':
+			statements = append(statements, strings.TrimSpace(script[start:i+1]))
+			i++
+			start = i
+		case '-':
+			if i+1 < len(script) && script[i+1] == '-' {
+				if end := strings.IndexByte(script[i+2:], '\n'); end == -1 {
+					i = len(script)
+				} else {
+					i += 2 + end + 1
+				}
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+
+	if trailing := strings.TrimSpace(script[start:]); trailing != "" {
+		statements = append(statements, trailing)
+	}
+	return statements
+}
+
+func dollarQuoteTag(script string, i int) (string, bool) {
+	if script[i] != '$' {
+		return "", false
+	}
+
+	j := i + 1
+	for j < len(script) && (script[j] == '_' || script[j] >= 'a' && script[j] <= 'z' || script[j] >= 'A' && script[j] <= 'Z' || script[j] >= '0' && script[j] <= '9') {
+		if j == i+1 && script[j] >= '0' && script[j] <= '9' {
+			return "", false
+		}
+		j++
+	}
+	if j >= len(script) || script[j] != '$' {
+		return "", false
+	}
+	return script[i : j+1], true
 }
 
 func getLastMigration() (int, error) {

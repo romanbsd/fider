@@ -16,6 +16,7 @@ func setupMigrationTest(t *testing.T) {
 	_, _ = trx.Execute("DELETE FROM migrations_history WHERE version >= 210001010000")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS dummy")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS foo")
+	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_dummy")
 	trx.MustCommit()
 }
 
@@ -51,4 +52,22 @@ func TestMigrate_Failure(t *testing.T) {
 
 	_, err = trx.Execute("SELECT description FROM dummy")
 	Expect(err).IsNotNil()
+}
+
+func TestMigrate_ConcurrentIndex(t *testing.T) {
+	setupMigrationTest(t)
+	ctx := context.Background()
+
+	err := dbx.Migrate(ctx, "/app/pkg/dbx/testdata/migration_concurrent")
+	Expect(err).IsNil()
+
+	trx, _ := dbx.BeginTx(ctx)
+	defer trx.MustRollback()
+
+	var count int
+	err = trx.Scalar(&count, `
+		SELECT COUNT(*) FROM pg_indexes
+		WHERE tablename = 'conc_dummy' AND indexname = 'conc_dummy_tenant_device_idx'`)
+	Expect(err).IsNil()
+	Expect(count).Equals(1)
 }

@@ -50,3 +50,30 @@ func TestLimiter_EmptyKey(t *testing.T) {
 	limiter := New(0, time.Minute)
 	Expect(limiter.Allow("key")).IsFalse()
 }
+
+func TestLimiter_EvictsIdleKeys(t *testing.T) {
+	RegisterT(t)
+
+	limiter := New(3, time.Minute)
+	current := time.Unix(0, 0)
+	limiter.now = func() time.Time { return current }
+
+	Expect(limiter.Allow("active")).IsTrue()
+	Expect(limiter.Allow("idle")).IsTrue()
+
+	// advance past the window; the idle key's entries are now stale
+	current = current.Add(2 * time.Minute)
+
+	// trigger sweeps through Allow calls on the active key
+	for i := 0; i < 2*sweepInterval; i++ {
+		limiter.Allow("active")
+	}
+
+	_, hasIdle := limiter.requests["idle"]
+	Expect(hasIdle).IsFalse()
+
+	// the evicted key starts with a clean slate
+	Expect(limiter.Allow("idle")).IsTrue()
+	_, hasIdle = limiter.requests["idle"]
+	Expect(hasIdle).IsTrue()
+}

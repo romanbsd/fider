@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -16,20 +17,49 @@ import (
 	"github.com/getfider/fider/app/pkg/widgettoken"
 )
 
-var widgetRateLimiter = ratelimit.New(env.Config.Widget.RateLimit, time.Minute)
+var (
+	// widgetRateLimiter is the per-tenant ceiling for all widget traffic
+	widgetRateLimiter = ratelimit.New(env.Config.Widget.RateLimit, time.Minute)
+	// widgetClientRateLimiter throttles unauthenticated widget requests per
+	// client so a single client cannot exhaust a tenant's budget
+	widgetClientRateLimiter = ratelimit.New(env.Config.Widget.RateLimit, time.Minute)
+)
 
-// WidgetRateLimit throttles widget requests per tenant. It protects the widget
-// endpoints (which are open to the public web) from abusive traffic.
+// WidgetRateLimit throttles widget requests per tenant. Unauthenticated requests
+// (the public sign-in) are additionally keyed by client so one client cannot
+// starve the whole tenant for the duration of the window.
 func WidgetRateLimit() web.MiddlewareFunc {
 	return func(next web.HandlerFunc) web.HandlerFunc {
 		return func(c *web.Context) error {
 			tenant := c.Tenant()
-			if tenant != nil && !widgetRateLimiter.Allow(fmt.Sprintf("%d", tenant.ID)) {
+			if tenant == nil {
+				return next(c)
+			}
+
+			if !widgetRateLimiter.Allow(fmt.Sprintf("%d", tenant.ID)) {
 				return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 			}
+
+			// Requests that are not yet attributed to a user (today: the sign-in
+			// endpoint) keep a per-client limit on top of the tenant ceiling.
+			if !c.IsAuthenticated() {
+				clientKey := fmt.Sprintf("%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr()))
+				if !widgetClientRateLimiter.Allow(clientKey) {
+					return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
+				}
+			}
+
 			return next(c)
 		}
 	}
+}
+
+func clientIP(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }
 
 // WidgetAuth authenticates requests coming from the feedback widget (a tenant
@@ -76,7 +106,7 @@ func authenticateWidget(c *web.Context, rawToken, udid string) (*entity.User, er
 		return nil, err
 	}
 
-	byDevice := &query.GetUserByDeviceHash{DeviceHash: udid}
+	byDevice := &query.GetUserByDeviceHash{DeviceHash: widgettoken.DeviceHash(udid)}
 	if err := bus.Dispatch(c, byDevice); err != nil {
 		return nil, err
 	}

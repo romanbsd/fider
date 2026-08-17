@@ -25,6 +25,7 @@ func TestWidgetTokenStorage_Create(t *testing.T) {
 	Expect(create.Result.Hash).HasLen(64)
 	Expect(create.Result.Label).Equals("My Website")
 	Expect(create.Result.RevokedAt).IsNil()
+	Expect(create.Result.CreatedAt.IsZero()).IsFalse()
 
 	// only the hash is persisted, never the raw token
 	getByHash := &query.GetWidgetTokenByHash{Hash: entity.HashWidgetToken(create.Result.RawToken)}
@@ -92,6 +93,17 @@ func TestWidgetTokenStorage_List(t *testing.T) {
 	Expect(list.Result).HasLen(2)
 	Expect(list.Result[0].Label).Equals("One")
 	Expect(list.Result[1].Label).Equals("Two")
+
+	// revoking a token excludes it from subsequent lists
+	revoke := &cmd.RevokeWidgetToken{TokenID: first.Result.ID}
+	err = bus.Dispatch(demoTenantCtx, revoke)
+	Expect(err).IsNil()
+
+	list = &query.ListWidgetTokens{}
+	err = bus.Dispatch(demoTenantCtx, list)
+	Expect(err).IsNil()
+	Expect(list.Result).HasLen(1)
+	Expect(list.Result[0].Label).Equals("Two")
 }
 
 func TestWidgetTokenStorage_DeviceUser(t *testing.T) {

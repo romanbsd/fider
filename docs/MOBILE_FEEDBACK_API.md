@@ -180,7 +180,10 @@ Raw tokens are never returned by list — only `id`, `label`, `createdAt`,
 `lastUsedAt`, `revokedAt`.
 
 `DELETE /api/v1/admin/widgets/tokens/:id` → `200 {}`. Revoked tokens fail all
-subsequent sign-in/auth attempts. `403` if the id does not belong to the tenant.
+subsequent sign-in and stateless header auth (`X-Widget-Token`). Note that
+revoking a token does **not** invalidate JWTs that were already issued from it —
+see [4.4 Security notes](#44-security-notes). `403` if the id does not belong to
+the tenant.
 
 ## 4. Client specification
 
@@ -200,12 +203,15 @@ subsequent sign-in/auth attempts. `403` if the id does not belong to the tenant.
    { "token": "<widget-token>", "udid": "<device-id>", "name": "Chrome on macOS" }
    ```
 
-   Store the returned `token` (JWT). On `401` (revoked token) drop the stored JWT and
-   surface "widget not configured".
+   Store the returned `token` (JWT). On a `401` sign-in response (revoked token)
+   drop the stored JWT and surface "widget not configured".
 4. **Authenticated requests** send either:
    - `Authorization: Bearer <jwt>`, or
    - statelessly, `X-Widget-Token` + `X-Widget-UDID` headers.
-   (JWT is preferred: cheaper, and works after token rotation.)
+   (JWT is preferred: it avoids re-validating the widget token on every request
+   and keeps working even while the widget token is rotated. The trade-off is that
+   a revoked widget token does not invalidate an already-issued JWT — see
+   [4.4 Security notes](#44-security-notes).)
 5. **Sign out** — `GET /widget/signout` with credentials, then delete the JWT. The
    device user and widget token remain valid; re-sign-in uses the same `udid`.
 
@@ -232,16 +238,22 @@ subsequent sign-in/auth attempts. `403` if the id does not belong to the tenant.
 | --- | --- |
 | `200` | Store JWT |
 | `400` | Bug in client request; log |
-| `401` | Credentials invalid/revoked — show "widget not configured" or re-run sign-in flow |
-| `422` | id_token rejected (expired / wrong audience) — re-trigger native sign-in |
+| `401` | Sign-in: widget token invalid/revoked — show "widget not configured". Bearer JWT: session expired or user changed — re-run the sign-in flow |
+| `422` | id_token rejected (expired / wrong audience / unverified email) — re-trigger native sign-in |
 | `429` | **Back off exponentially** (respect `Retry-After` if present); do not retry in a tight loop |
 
 ### 4.4 Security notes
 
 - Server only stores `SHA-256` hashes of widget tokens — a DB leak does not leak
   usable tokens.
+- Device identifiers (`udid`) are also stored as `SHA-256` digests; the raw value
+  is never persisted.
 - JWT expiry is 365 days; clients should be prepared for 401 at any time and
   re-sign-in.
+- **Token revocation is not retroactive**: revoking a widget token blocks new
+  sign-ins and the stateless `X-Widget-Token` path, but JWTs issued before the
+  revocation remain valid until they expire or the device user is blocked. Plan
+  revocation assuming already-signed-in devices keep access for the JWT lifetime.
 - Device users are role `Visitor` — they cannot administer anything. Raise
   privilege via the normal member/admin flow if a device user needs more.
 - `Access-Control-Allow-Origin: *` is intentional (arbitrary customer sites embed the

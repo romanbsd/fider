@@ -13,4 +13,4 @@ CREATE INDEX widget_tokens_tenant_id_idx ON widget_tokens (tenant_id);
 
 ALTER TABLE users ADD COLUMN device_hash TEXT;
 
-CREATE UNIQUE INDEX users_tenant_device_hash_idx ON users (tenant_id, device_hash);
+CREATE UNIQUE INDEX CONCURRENTLY users_tenant_device_hash_idx ON users (tenant_id, device_hash);
