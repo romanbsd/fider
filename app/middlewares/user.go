@@ -84,14 +84,9 @@ func User() web.MiddlewareFunc {
 					// /widget/signin. A Web-origin token (UI session) is never
 					// accepted as a bearer credential.
 					if claims, err := jwt.DecodeFiderClaims(bearer); err == nil && claims.Origin == jwt.FiderClaimsOriginAPI {
-						if user, err = findUserByClaims(c, claims); err != nil || user == nil {
-							return c.JSON(401, web.Map{})
-						}
-						if claims.SecurityStamp != "" && user.SecurityStamp != claims.SecurityStamp {
-							return c.JSON(401, web.Map{})
-						}
-						if widgettoken.ValidateSession(c, claims) != nil {
-							// the widget token this JWT was issued from has been revoked
+						var ok bool
+						user, ok = resolveAPIClaimsUser(c, claims)
+						if !ok {
 							return c.JSON(401, web.Map{})
 						}
 					} else {
@@ -172,4 +167,27 @@ func findUserByClaims(c *web.Context, claims *jwt.FiderClaims) (*entity.User, er
 		return nil, err
 	}
 	return byID.Result, nil
+}
+
+// resolveAPIClaimsUser validates a Fider JWT issued through the mobile/widget API
+// against the current tenant: the user must exist in the tenant, its security
+// stamp must match, it must not be blocked, and the widget token the JWT was
+// issued from (if any) must still be active. Returns the tenant-scoped user, or
+// (nil, false) when the token is no longer usable.
+func resolveAPIClaimsUser(c *web.Context, claims *jwt.FiderClaims) (*entity.User, bool) {
+	user, err := findUserByClaims(c, claims)
+	if err != nil || user == nil {
+		return nil, false
+	}
+	if claims.SecurityStamp != "" && user.SecurityStamp != claims.SecurityStamp {
+		return nil, false
+	}
+	if widgettoken.ValidateSession(c, claims) != nil {
+		// the widget token this JWT was issued from has been revoked
+		return nil, false
+	}
+	if user.Status == enum.UserBlocked {
+		return nil, false
+	}
+	return user, true
 }

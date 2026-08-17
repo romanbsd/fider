@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/getfider/fider/app/models/entity"
-	"github.com/getfider/fider/app/models/enum"
 	"github.com/getfider/fider/app/models/query"
 	"github.com/getfider/fider/app/pkg/bus"
 	"github.com/getfider/fider/app/pkg/env"
@@ -133,18 +132,8 @@ func authenticateMobile(c *web.Context, token string, next web.HandlerFunc) erro
 		return c.Unauthorized()
 	}
 
-	user, err := findUserByClaims(c, claims)
-	if err != nil || user == nil {
-		return c.Unauthorized()
-	}
-	if claims.SecurityStamp != "" && user.SecurityStamp != claims.SecurityStamp {
-		return c.Unauthorized()
-	}
-	if widgettoken.ValidateSession(c, claims) != nil {
-		// the widget token this JWT was issued from has been revoked
-		return c.Unauthorized()
-	}
-	if user.Status == enum.UserBlocked {
+	user, ok := resolveAPIClaimsUser(c, claims)
+	if !ok {
 		return c.Unauthorized()
 	}
 
