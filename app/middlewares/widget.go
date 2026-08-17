@@ -107,7 +107,7 @@ func WidgetAuth() web.MiddlewareFunc {
 			}
 
 			widgetToken, udid := widgetCredentials(c)
-			if widgetToken != "" && udid != "" {
+			if widgetToken != "" && widgettoken.ValidUDID(udid) {
 				user, err := authenticateWidget(c, widgetToken, udid)
 				if err != nil {
 					return c.Unauthorized()

@@ -145,7 +145,7 @@ Errors:
 
 | Status | Body | Cause |
 | --- | --- | --- |
-| `400` | `{"errors":{"token":"token and udid are required"}}` | Missing `token`/`udid` on device path |
+| `400` | `{"errors":{"token":"token is required, udid must be 8-128 chars"}}` | Missing `token`, or `udid` missing/outside the 8-128 char range, on device path |
 | `401` | — | Invalid or revoked widget token |
 | `422` | `{"error":"..."}` | Invalid `id_token`, or id_token sign-in not configured |
 | `429` | `{"error":"Too Many Requests"}` | Tenant rate limit exceeded |

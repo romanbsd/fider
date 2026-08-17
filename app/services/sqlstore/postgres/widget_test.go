@@ -143,3 +143,24 @@ func TestWidgetTokenStorage_DeviceUser(t *testing.T) {
 	Expect(errors.Cause(err)).Equals(app.ErrNotFound)
 	Expect(getUnknown.Result).IsNil()
 }
+
+func TestWidgetTokenStorage_DeviceUser_EmailCollision(t *testing.T) {
+	SetupDatabaseTest(t)
+	defer TeardownDatabaseTest()
+
+	first := &cmd.RegisterDeviceUser{DeviceHash: "device-collide-1", Name: "First Device", Email: "collide@device.io"}
+	err := bus.Dispatch(demoTenantCtx, first)
+	Expect(err).IsNil()
+	Expect(first.Result.Email).Equals("collide@device.io")
+
+	// A second, different device registering with the same email must still
+	// succeed (email is optional/cosmetic for device users, not their real
+	// identity) instead of failing with a distinguishable error a widget-token
+	// holder could use to enumerate registered emails.
+	second := &cmd.RegisterDeviceUser{DeviceHash: "device-collide-2", Name: "Second Device", Email: "collide@device.io"}
+	err = bus.Dispatch(demoTenantCtx, second)
+	Expect(err).IsNil()
+	Expect(second.Created).IsTrue()
+	Expect(second.Result.Email).Equals("")
+	Expect(second.Result.ID).NotEquals(first.Result.ID)
+}

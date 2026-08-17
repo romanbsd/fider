@@ -55,6 +55,26 @@ SELECT 1;`
 	}
 }
 
+func TestSplitStatements_QuotedIdentifier(t *testing.T) {
+	script := `CREATE TABLE "weird;name" (a text);
+SELECT 1;`
+
+	got := splitStatements(script)
+	want := []string{
+		`CREATE TABLE "weird;name" (a text);`,
+		"SELECT 1;",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d statements, got %d: %q", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("statement %d mismatch:\n got: %q\nwant: %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSplitStatements_Empty(t *testing.T) {
 	got := splitStatements("  \n\t ")
 	if len(got) != 0 {

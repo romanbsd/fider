@@ -121,11 +121,28 @@ func registerDeviceUser(ctx context.Context, c *cmd.RegisterDeviceUser) error {
 		name := strings.TrimSpace(c.Name)
 		email := strings.ToLower(strings.TrimSpace(c.Email))
 
-		id, _, err := insertUser(trx, tenant, name, email, enum.RoleVisitor, c.DeviceHash)
-		c.Created = err == nil
-		if err != nil && errors.Cause(err) == app.ErrEmailTaken {
-			return app.ErrEmailTaken
+		// A savepoint lets us recover from insertUser's constraint violation
+		// below without aborting the rest of this transaction (Postgres
+		// aborts the whole transaction after any failed statement until a
+		// ROLLBACK, full or to a savepoint).
+		if _, err := trx.Execute("SAVEPOINT device_email_retry"); err != nil {
+			return errors.Wrap(err, "failed to register device user")
 		}
+
+		id, _, err := insertUser(trx, tenant, name, email, enum.RoleVisitor, c.DeviceHash)
+		if err != nil && errors.Cause(err) == app.ErrEmailTaken {
+			// Email is only a cosmetic display field for device-registered
+			// Visitor users (device_hash is the real identity). Surfacing this
+			// collision distinguishably from an invalid-token failure would let
+			// a widget-token holder enumerate registered emails by probing
+			// arbitrary udid/email pairs, so register the device without the
+			// email instead of failing the request.
+			if _, rbErr := trx.Execute("ROLLBACK TO SAVEPOINT device_email_retry"); rbErr != nil {
+				return errors.Wrap(rbErr, "failed to register device user")
+			}
+			id, _, err = insertUser(trx, tenant, name, "", enum.RoleVisitor, c.DeviceHash)
+		}
+		c.Created = err == nil
 		if err != nil && errors.Cause(err) != app.ErrNotFound {
 			return errors.Wrap(err, "failed to register device user")
 		}

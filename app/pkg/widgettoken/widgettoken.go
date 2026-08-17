@@ -17,6 +17,20 @@ func DeviceHash(udid string) string {
 	return crypto.SHA256(udid)
 }
 
+// minUDIDLength and maxUDIDLength are the documented bounds for a device
+// identifier (docs/MOBILE_FEEDBACK_API.md): long enough to carry real entropy
+// (a UUID v4 is 36 chars), short enough to keep the header/body small.
+const (
+	minUDIDLength = 8
+	maxUDIDLength = 128
+)
+
+// ValidUDID reports whether udid meets the documented length constraint for
+// X-Widget-UDID / the sign-in udid field.
+func ValidUDID(udid string) bool {
+	return len(udid) >= minUDIDLength && len(udid) <= maxUDIDLength
+}
+
 // Validate checks that rawToken matches an active widget token of the current
 // tenant and marks it as recently used in the same round trip (an UPDATE ...
 // RETURNING), returning app.ErrNotFound when no active token matches the hash.

@@ -177,8 +177,9 @@ func isConcurrentMigration(statements []string) bool {
 }
 
 // splitStatements splits a SQL script into individual statements, honouring
-// single-quoted literals, dollar-quoted strings, and SQL comments, so statements can be run
-// outside a transaction (e.g. CREATE INDEX CONCURRENTLY).
+// single-quoted literals, double-quoted identifiers, dollar-quoted strings,
+// and SQL comments, so statements can be run outside a transaction (e.g.
+// CREATE INDEX CONCURRENTLY).
 func splitStatements(script string) []string {
 	var (
 		statements []string
@@ -188,16 +189,17 @@ func splitStatements(script string) []string {
 
 	for i < len(script) {
 		switch script[i] {
-		case '\'':
+		case '\'', '"':
+			quote := script[i]
 			for {
-				end := strings.IndexByte(script[i+1:], '\'')
+				end := strings.IndexByte(script[i+1:], quote)
 				if end == -1 {
 					i = len(script)
 					break
 				}
 				i += end + 1
-				if i+1 < len(script) && script[i+1] == '\'' {
-					// escaped quote inside the literal
+				if i+1 < len(script) && script[i+1] == quote {
+					// escaped quote inside the literal/identifier
 					i++
 					continue
 				}
