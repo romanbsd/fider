@@ -529,6 +529,43 @@ func TestUser_RevokedWidgetToken_JWTRejected(t *testing.T) {
 	Expect(status).Equals(http.StatusUnauthorized)
 }
 
+func TestUser_RevokedWidgetToken_CookieRejected(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:        mock.JonSnow.ID,
+			UserName:      mock.JonSnow.Name,
+			SecurityStamp: mock.JonSnow.SecurityStamp,
+		},
+		WidgetTokenHash: "revoked-token-hash",
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, response := server.
+		OnTenant(mock.DemoTenant).
+		AddCookie(web.CookieAuthName, token).
+		Execute(func(c *web.Context) error {
+			if c.User() == nil {
+				return c.NoContent(http.StatusNoContent)
+			}
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusNoContent)
+	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
+}
+
 func TestUser_Impersonation_Collaborator(t *testing.T) {
 	RegisterT(t)
 

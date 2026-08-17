@@ -44,13 +44,19 @@ func User() web.MiddlewareFunc {
 			}
 
 			if token != "" {
-				claims, err := jwt.DecodeFiderClaims(token)
+				// Decoded as WidgetClaims (a superset of FiderClaims) rather than
+				// FiderClaims directly: a device-issued JWT carries a
+				// WidgetTokenHash, and its revocation must be re-checked below
+				// regardless of whether the client sends it as a cookie or a
+				// bearer token. A regular UI-session JWT simply has this field
+				// empty.
+				claims, err := jwt.DecodeWidgetClaims(token)
 				if err != nil {
 					c.RemoveCookie(web.CookieAuthName)
 					return next(c)
 				}
 
-				user, err = findUserByClaims(c, claims)
+				user, err = findUserByClaims(c, &claims.FiderClaims)
 				if err != nil {
 					return err
 				}
@@ -77,6 +83,14 @@ func User() web.MiddlewareFunc {
 						return c.Redirect("/signin?redirect=" + url.QueryEscape(redirectTarget))
 					}
 					return c.Redirect("/signin")
+				}
+
+				// A device-issued JWT is bound to the widget token it came from;
+				// re-check that the token is still active so revocation applies
+				// no matter which transport (cookie or bearer) the client uses.
+				if claims.WidgetTokenHash != "" && widgettoken.ValidateSession(c, claims) != nil {
+					c.RemoveCookie(web.CookieAuthName)
+					return next(c)
 				}
 			} else if c.Request.IsAPI() {
 				if bearer, err := web.BearerToken(c.Request.GetHeader("Authorization")); err == nil {
