@@ -270,7 +270,11 @@ the tenant.
 - Device users are role `Visitor` — they cannot administer anything. Raise
   privilege via the normal member/admin flow if a device user needs more.
 - `Access-Control-Allow-Origin: *` is intentional (arbitrary customer sites embed the
-  widget) — credentials are carried in headers, never cookies.
+  widget) — credentials are carried in headers, never cookies. On the
+  authenticated `/api/v1/*` member API this wildcard is scoped to Visitor-role
+  (device) sessions only (`VisitorWidgetCORS`); a real collaborator or admin
+  bearer session hitting the same routes stays same-origin-only, so a leaked
+  higher-privilege token can't be used from an arbitrary origin.
 
 ## 5. Client implementation checklist
 

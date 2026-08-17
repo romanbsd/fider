@@ -124,3 +124,45 @@ func TestMigrate_ConcurrentIndex_RepairsInvalidIndex(t *testing.T) {
 	Expect(err).IsNil()
 	Expect(indisvalid).IsTrue()
 }
+
+// TestMigrate_ConcurrentIndex_SkipsValidIndexDrop verifies the migration
+// runner does not drop an already-valid index just because the migration
+// file contains a DROP INDEX statement for it: dropping a valid index right
+// before a CONCURRENTLY rebuild would open a window where concurrent writes
+// could violate the constraint it enforces. The index's OID staying the same
+// proves it was never dropped (a drop+recreate would produce a new OID).
+func TestMigrate_ConcurrentIndex_SkipsValidIndexDrop(t *testing.T) {
+	setupMigrationTest(t)
+	ctx := context.Background()
+
+	conn := dbx.Connection()
+
+	trx, _ := dbx.BeginTx(ctx)
+	_, err := trx.Execute(`CREATE TABLE conc_repair_dummy (id BIGSERIAL PRIMARY KEY, tenant_id INT NOT NULL, device_hash TEXT)`)
+	Expect(err).IsNil()
+	trx.MustCommit()
+
+	_, err = conn.Exec("CREATE UNIQUE INDEX CONCURRENTLY conc_repair_dummy_idx ON conc_repair_dummy (tenant_id, device_hash)")
+	Expect(err).IsNil()
+
+	trx, _ = dbx.BeginTx(ctx)
+	var oidBefore string
+	err = trx.Scalar(&oidBefore, `SELECT indexrelid::text FROM pg_index WHERE indexrelid = 'conc_repair_dummy_idx'::regclass`)
+	Expect(err).IsNil()
+	trx.MustRollback()
+
+	err = dbx.Migrate(ctx, "/app/pkg/dbx/testdata/migration_concurrent_repair")
+	Expect(err).IsNil()
+
+	trx, _ = dbx.BeginTx(ctx)
+	defer trx.MustRollback()
+	var oidAfter string
+	err = trx.Scalar(&oidAfter, `SELECT indexrelid::text FROM pg_index WHERE indexrelid = 'conc_repair_dummy_idx'::regclass`)
+	Expect(err).IsNil()
+	Expect(oidAfter).Equals(oidBefore)
+
+	var indisvalid bool
+	err = trx.Scalar(&indisvalid, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'conc_repair_dummy_idx'::regclass`)
+	Expect(err).IsNil()
+	Expect(indisvalid).IsTrue()
+}

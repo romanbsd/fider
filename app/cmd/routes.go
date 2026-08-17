@@ -271,10 +271,14 @@ func routes(r *web.Engine) *web.Engine {
 	// Available to any authenticated user
 	membersApi := r.Group()
 	{
-		if env.Config.Widget.Enabled {
-			membersApi.Use(middlewares.WidgetCORS())
-		}
 		membersApi.Use(middlewares.IsAuthenticated())
+		if env.Config.Widget.Enabled {
+			// Runs after IsAuthenticated so it can scope wildcard CORS to
+			// Visitor-role (widget device) sessions only; a real
+			// collaborator/admin session calling this same authenticated
+			// surface stays same-origin-only.
+			membersApi.Use(middlewares.VisitorWidgetCORS())
+		}
 		membersApi.Use(middlewares.BlockLockedTenants())
 
 		membersApi.Post("/api/v1/posts", apiv1.CreatePost())

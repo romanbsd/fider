@@ -14,7 +14,10 @@ CREATE INDEX IF NOT EXISTS widget_tokens_tenant_id_idx ON widget_tokens (tenant_
 ALTER TABLE users ADD COLUMN IF NOT EXISTS device_hash TEXT;
 
 -- A concurrent index build that was interrupted can leave an invalid index
--- behind; IF NOT EXISTS alone would then skip building it forever. Drop any
--- leftover index first so a re-run repairs the build rather than skipping it.
-DROP INDEX IF EXISTS users_tenant_device_hash_idx;
+-- behind; IF NOT EXISTS alone would then skip building it forever. The
+-- migration runner only executes this DROP when the index is actually
+-- invalid (see indexIsValid in app/pkg/dbx/migrate.go) — an already-valid
+-- index is left alone rather than dropped and racing a rebuild. CONCURRENTLY
+-- avoids the ACCESS EXCLUSIVE lock a plain DROP INDEX would take.
+DROP INDEX CONCURRENTLY IF EXISTS users_tenant_device_hash_idx;
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS users_tenant_device_hash_idx ON users (tenant_id, device_hash);

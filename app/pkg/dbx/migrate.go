@@ -108,6 +108,21 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 		// should be written idempotently (IF NOT EXISTS etc.) so the next run can
 		// recover.
 		for _, statement := range statements {
+			if name, ok := dropIndexTarget(statement); ok {
+				valid, err := indexIsValid(name)
+				if err != nil {
+					return errors.Wrap(err, "failed to run migration '%s'", fileName)
+				}
+				if valid {
+					// A valid index doesn't need repairing: dropping it here
+					// would open a window, before the CONCURRENTLY rebuild
+					// below completes, where concurrent writes could violate
+					// the constraint it enforces (and could then make the
+					// rebuild itself fail). Only an invalid index left behind
+					// by an interrupted CONCURRENTLY build needs dropping.
+					continue
+				}
+			}
 			if _, err := conn.Exec(statement); err != nil {
 				return errors.Wrap(err, "failed to run migration '%s'", fileName)
 			}
@@ -138,6 +153,31 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 }
 
 var concurrentIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
+var dropIndexRegex = regexp.MustCompile(`(?i)^DROP\s+INDEX\s+(CONCURRENTLY\s+)?(IF\s+EXISTS\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\s*;?\s*$`)
+
+// dropIndexTarget returns the index name targeted by a (trimmed) DROP INDEX
+// statement, if the statement is exactly that.
+func dropIndexTarget(statement string) (string, bool) {
+	m := dropIndexRegex.FindStringSubmatch(strings.TrimSpace(statement))
+	if m == nil {
+		return "", false
+	}
+	return m[3], true
+}
+
+// indexIsValid reports whether an index with the given name currently exists
+// and is valid (i.e. not left behind by an interrupted CONCURRENTLY build).
+func indexIsValid(name string) (bool, error) {
+	var valid bool
+	row := conn.QueryRow(`SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)`, name)
+	if err := row.Scan(&valid); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return valid, nil
+}
 
 // isConcurrentMigration reports whether any statement of the script is a
 // CREATE INDEX CONCURRENTLY, ignoring leading SQL comments. Detection runs on

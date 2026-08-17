@@ -94,6 +94,56 @@ SELECT 1;`
 	}
 }
 
+func TestDropIndexTarget(t *testing.T) {
+	cases := []struct {
+		name       string
+		statement  string
+		wantName   string
+		wantExists bool
+	}{
+		{
+			name:       "plain",
+			statement:  "DROP INDEX foo;",
+			wantName:   "foo",
+			wantExists: true,
+		},
+		{
+			name:       "if exists",
+			statement:  "DROP INDEX IF EXISTS foo;",
+			wantName:   "foo",
+			wantExists: true,
+		},
+		{
+			name:       "concurrently if exists",
+			statement:  "DROP INDEX CONCURRENTLY IF EXISTS users_tenant_device_hash_idx;",
+			wantName:   "users_tenant_device_hash_idx",
+			wantExists: true,
+		},
+		{
+			name:       "quoted name",
+			statement:  `DROP INDEX IF EXISTS "foo";`,
+			wantName:   "foo",
+			wantExists: true,
+		},
+		{
+			name:       "not a drop index",
+			statement:  "CREATE INDEX foo ON bar (id);",
+			wantExists: false,
+		},
+	}
+
+	for _, tc := range cases {
+		name, ok := dropIndexTarget(tc.statement)
+		if ok != tc.wantExists {
+			t.Errorf("%s: got ok=%v, want %v", tc.name, ok, tc.wantExists)
+			continue
+		}
+		if ok && name != tc.wantName {
+			t.Errorf("%s: got name %q, want %q", tc.name, name, tc.wantName)
+		}
+	}
+}
+
 func TestSplitStatements_Empty(t *testing.T) {
 	got := splitStatements("  \n\t ")
 	if len(got) != 0 {
