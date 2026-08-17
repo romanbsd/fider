@@ -119,6 +119,20 @@ func signInByIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {
 	}
 
 	const provider = "idtoken"
+
+	// Private tenants reject unknown identities unless admission was granted
+	// through the normal invite flow. Existing users always sign in.
+	if c.Tenant().IsPrivate {
+		existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UserID, claims.Email)
+		if err != nil {
+			return nil, err
+		}
+		if existing == nil {
+			return nil, errors.New("You are not invited to this site")
+		}
+		return handlers.RegisterUserByProvider(c, c.Tenant(), existing, provider, claims.UserID, claims.Name, claims.Email)
+	}
+
 	return handlers.RegisterUserByProvider(c, c.Tenant(), nil, provider, claims.UserID, claims.Name, claims.Email)
 }
 

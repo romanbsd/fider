@@ -254,6 +254,11 @@ the tenant.
   sign-ins and the stateless `X-Widget-Token` path, but JWTs issued before the
   revocation remain valid until they expire or the device user is blocked. Plan
   revocation assuming already-signed-in devices keep access for the JWT lifetime.
+- **Device identity is as strong as the `udid`.** Sign-in proves possession of
+  the tenant widget token plus a device id; anyone holding both can authenticate
+  as that device user (device users are role `Visitor`). Treat `udid` as a
+  non-shareable credential, and bind data routes to per-device secrets before
+  exposing higher-privilege operations.
 - Device users are role `Visitor` — they cannot administer anything. Raise
   privilege via the normal member/admin flow if a device user needs more.
 - `Access-Control-Allow-Origin: *` is intentional (arbitrary customer sites embed the
