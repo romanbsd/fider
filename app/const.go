@@ -11,6 +11,13 @@ var InvitePlaceholder = "%invite%"
 // ErrUserIDRequired is used when OAuth integration returns an empty user ID
 var ErrUserIDRequired = errors.New("UserID is required during OAuth integration")
 
+// ErrEmailTaken is returned when an insert violates the per-tenant email uniqueness constraint
+var ErrEmailTaken = errors.New("email address is already in use")
+
+// ErrDeviceSecretMismatch is returned when a widget device sign-in for an
+// already-registered device presents a missing or incorrect device secret
+var ErrDeviceSecretMismatch = errors.New("device secret is missing or incorrect")
+
 type key string
 
 func createKey(name string) key {

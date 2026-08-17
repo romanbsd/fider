@@ -246,6 +246,11 @@ func (e *Engine) Delete(path string, handler HandlerFunc) {
 	e.mux.Handle("DELETE", path, e.handle(e.middlewares, handler))
 }
 
+// Options handles HTTP OPTIONS requests.
+func (e *Engine) Options(path string, handler HandlerFunc) {
+	e.mux.Handle("OPTIONS", path, e.handle(e.middlewares, handler))
+}
+
 // NotFound register how to handle routes that are not found
 func (e *Engine) NotFound(handler HandlerFunc) {
 	e.mux.NotFound = &notFoundHandler{
@@ -308,6 +313,11 @@ func (g *Group) Put(path string, handler HandlerFunc) {
 // Delete handles HTTP DELETE requests
 func (g *Group) Delete(path string, handler HandlerFunc) {
 	g.engine.mux.Handle("DELETE", path, g.engine.handle(g.middlewares, handler))
+}
+
+// Options handles HTTP OPTIONS requests.
+func (g *Group) Options(path string, handler HandlerFunc) {
+	g.engine.mux.Handle("OPTIONS", path, g.engine.handle(g.middlewares, handler))
 }
 
 // Static return files from given folder

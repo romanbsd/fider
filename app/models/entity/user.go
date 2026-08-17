@@ -20,6 +20,11 @@ type User struct {
 	Status        enum.UserStatus `json:"status"`
 	IsTrusted     bool            `json:"isTrusted"`
 	SecurityStamp string          `json:"-"`
+	// DeviceSecretHash is set only for widget/mobile device-registered users:
+	// the hash of the per-device secret issued at first sign-in, required to
+	// re-authenticate that device on later sign-ins (see
+	// docs/MOBILE_FEEDBACK_API.md §4.4). Empty for every other user.
+	DeviceSecretHash string `json:"-"`
 }
 
 // HasProvider returns true if current user has registered with given provider
