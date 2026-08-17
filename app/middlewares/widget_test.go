@@ -19,13 +19,16 @@ import (
 	"github.com/getfider/fider/app/pkg/widgettoken"
 )
 
+const testDeviceSecret = "test-device-secret"
+
 var testDeviceUser = &entity.User{
-	ID:     99,
-	Name:   "Widget Visitor",
-	Email:  "visitor@widget.io",
-	Tenant: mock.DemoTenant,
-	Status: enum.UserActive,
-	Role:   enum.RoleVisitor,
+	ID:               99,
+	Name:             "Widget Visitor",
+	Email:            "visitor@widget.io",
+	Tenant:           mock.DemoTenant,
+	Status:           enum.UserActive,
+	Role:             enum.RoleVisitor,
+	DeviceSecretHash: entity.HashDeviceSecret(testDeviceSecret),
 }
 
 func registerWidgetBus() {
@@ -78,12 +81,74 @@ func TestWidgetAuth_WidgetToken(t *testing.T) {
 		OnTenant(mock.DemoTenant).
 		AddHeader("X-Widget-Token", "some-raw-token").
 		AddHeader("X-Widget-UDID", "device-0x123").
+		AddHeader("X-Widget-Device-Secret", testDeviceSecret).
 		Execute(func(c *web.Context) error {
 			return c.String(http.StatusOK, c.User().Name)
 		})
 
 	Expect(status).Equals(http.StatusOK)
 	Expect(response.Body.String()).Equals("Widget Visitor")
+}
+
+func TestWidgetAuth_WidgetToken_MissingDeviceSecret(t *testing.T) {
+	RegisterT(t)
+	registerWidgetBus()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
+		return nil
+	})
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
+		if q.DeviceHash == widgettoken.DeviceHash("device-0x123") {
+			q.Result = testDeviceUser
+			return nil
+		}
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.WidgetAuth())
+	status, _ := server.
+		OnTenant(mock.DemoTenant).
+		AddHeader("X-Widget-Token", "some-raw-token").
+		AddHeader("X-Widget-UDID", "device-0x123").
+		Execute(func(c *web.Context) error {
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusUnauthorized)
+}
+
+func TestWidgetAuth_WidgetToken_WrongDeviceSecret(t *testing.T) {
+	RegisterT(t)
+	registerWidgetBus()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
+		return nil
+	})
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
+		if q.DeviceHash == widgettoken.DeviceHash("device-0x123") {
+			q.Result = testDeviceUser
+			return nil
+		}
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.WidgetAuth())
+	status, _ := server.
+		OnTenant(mock.DemoTenant).
+		AddHeader("X-Widget-Token", "some-raw-token").
+		AddHeader("X-Widget-UDID", "device-0x123").
+		AddHeader("X-Widget-Device-Secret", "not-the-right-secret").
+		Execute(func(c *web.Context) error {
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusUnauthorized)
 }
 
 func TestWidgetAuth_WidgetToken_Invalid(t *testing.T) {

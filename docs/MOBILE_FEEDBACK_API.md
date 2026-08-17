@@ -44,6 +44,7 @@ CREATE TABLE widget_tokens (
 CREATE INDEX widget_tokens_tenant_id_idx ON widget_tokens (tenant_id);
 
 ALTER TABLE users ADD COLUMN device_hash TEXT;
+ALTER TABLE users ADD COLUMN device_secret_hash TEXT;
 CREATE UNIQUE INDEX users_tenant_device_hash_idx ON users (tenant_id, device_hash);
 ```
 
@@ -52,6 +53,10 @@ CREATE UNIQUE INDEX users_tenant_device_hash_idx ON users (tenant_id, device_has
 - **Device users** are ordinary `users` rows with `device_hash` set and role
   `Visitor`. `(tenant_id, device_hash)` is unique, so a re-sign-in from the same
   device resolves to the same user.
+- **Device secrets are stored hashed** the same way as widget tokens. The raw
+  value is returned once, in the response to a device's first sign-in, and is
+  required to re-authenticate that device afterwards — see
+  [4.4 Security notes](#44-security-notes).
 
 ### 2.2 Configuration (env vars)
 
@@ -80,19 +85,28 @@ of:
 | Method | Credentials |
 | --- | --- |
 | Bearer JWT | `Authorization: Bearer <fider-jwt>` → signs in the token's user |
-| Widget token + device | `X-Widget-Token: <raw>` + `X-Widget-UDID: <device-id>` → signs in the device user |
+| Widget token + device | `X-Widget-Token: <raw>` + `X-Widget-UDID: <device-id>` + `X-Widget-Device-Secret: <raw>` → signs in the device user |
 
 - The `/widget/signin` path is exempt from authentication (it *is* the login).
-- Token/device mismatch, unknown device, or a revoked token → `401`.
+- Token/device mismatch, unknown device, missing/incorrect device secret, or a
+  revoked token → `401`.
 - `X-Widget-UDID` must be 8–128 chars.
+- The widget token alone identifies the *tenant*, not the caller — every device
+  of a tenant shares it. `X-Widget-Device-Secret` is the caller's actual proof
+  of identity for this specific device; see
+  [4.4 Security notes](#44-security-notes).
 
 **`WidgetRateLimit`** (see `app/middlewares/widget_rate_limit.go`) applies a sliding
 window of 1 minute per tenant; exceeding `WIDGET_RATE_LIMIT` → `429`.
 
 **`WidgetCORS`** (see `app/middlewares/cors.go`):
-`Access-Control-Allow-Origin: *`, `GET, POST, OPTIONS`, headers
-`Content-Type, Authorization, X-Widget-Token, X-Widget-UDID`, `Max-Age: 86400`.
-Preflight `OPTIONS` returns `200` immediately.
+`Access-Control-Allow-Origin: *`, `GET, POST, PUT, DELETE, OPTIONS`, headers
+`Content-Type, Authorization, X-Widget-Token, X-Widget-UDID, X-Widget-Device-Secret`,
+`Max-Age: 86400`. Preflight `OPTIONS` returns `200` immediately. On the
+authenticated `/api/v1/*` member API, the wildcard origin is scoped to
+Visitor-role (device) sessions only (`VisitorWidgetCORS`) — a real
+collaborator/admin bearer session hitting the same routes stays
+same-origin-only.
 
 ## 3. API surface
 
@@ -114,14 +128,18 @@ Request body:
 {
   "token": "<raw-widget-token>",
   "udid": "<stable-device-id>",
-  "name": "My Device",      // optional, default ""
-  "email": "",              // optional, default ""
-  "id_token": "<oidc-id-token>" // optional; when present, token/udid are ignored
+  "name": "My Device",         // optional, default ""
+  "email": "",                 // optional, default ""
+  "device_secret": "",         // required to re-sign-in an already-registered device; omit/empty on first sign-in
+  "id_token": "<oidc-id-token>" // optional; when present, token/udid/device_secret are ignored
 }
 ```
 
 - **Device path:** `token` + `udid` required. `token` is validated (hash lookup,
-  not revoked); the device user is created/fetched by `udid` and signed in.
+  not revoked). A device seen for the first time is created and its user
+  returned. An already-registered `udid` requires `device_secret` to match the
+  value issued at that device's first sign-in — see
+  [4.4 Security notes](#44-security-notes).
 - **id_token path:** `id_token` must verify against the configured JWKS/issuer/aud
   (provider name `idtoken`). The user is matched by provider UID, then by email,
   otherwise a new Visitor user is registered.
@@ -131,6 +149,7 @@ Success `200`:
 ```json
 {
   "token": "<fider-jwt-365d>",
+  "device_secret": "<raw-secret>", // only present on a device's first sign-in
   "user": {
     "id": 42,
     "name": "My Device",
@@ -141,12 +160,16 @@ Success `200`:
 }
 ```
 
+`device_secret` is never recoverable after this response — the client must store
+it (alongside `udid`) and send it as `device_secret` on every later sign-in for
+this device.
+
 Errors:
 
 | Status | Body | Cause |
 | --- | --- | --- |
 | `400` | `{"errors":{"token":"token is required, udid must be 8-128 chars"}}` | Missing `token`, or `udid` missing/outside the 8-128 char range, on device path |
-| `401` | — | Invalid or revoked widget token |
+| `401` | — | Invalid or revoked widget token, or `device_secret` missing/incorrect for an already-registered `udid` |
 | `422` | `{"error":"..."}` | Invalid `id_token`, or id_token sign-in not configured |
 | `429` | `{"error":"Too Many Requests"}` | Tenant rate limit exceeded |
 
@@ -204,8 +227,21 @@ the tenant.
    { "token": "<widget-token>", "udid": "<device-id>", "name": "Chrome on macOS" }
    ```
 
-   Store the returned `token` (JWT). On a `401` sign-in response (revoked token)
-   drop the stored JWT and surface "widget not configured".
+   On the **first** sign-in for this `udid`, the response includes a
+   `device_secret` — store it locally alongside `udid` (e.g. `localStorage`).
+   From the **second** sign-in onward, send it back:
+
+   ```
+   POST /widget/signin
+   Content-Type: application/json
+   { "token": "<widget-token>", "udid": "<device-id>", "device_secret": "<stored-secret>" }
+   ```
+
+   Store the returned `token` (JWT). On a `401` sign-in response (revoked
+   widget token, or a missing/incorrect `device_secret`) drop the stored JWT
+   and surface "widget not configured" — a wrong `device_secret` for an
+   existing `udid` is not recoverable by retrying; it means the locally
+   stored secret was lost or the client is misconfigured.
 4. **Authenticated requests** send `Authorization: Bearer <jwt>`. The JWT is
    accepted by the **existing `/api/v1/*` member API** (posts, comments, votes,
    subscriptions, settings) with the signed-in user's real role; device users
@@ -262,11 +298,15 @@ the tenant.
   re-checks that the token is still active. Revoking a widget token immediately
   invalidates the JWTs issued through it. JWTs issued to real users via id_token
   are unaffected (they are not tied to a widget token).
-- **Device identity is as strong as the `udid`.** Revoking the widget token does
-  not help if the raw `udid` itself is compromised. Sign-in proves possession of
-  the tenant widget token plus a device id; anyone holding both can authenticate
-  as that device user (device users are role `Visitor`). Treat `udid` as a
-  non-shareable credential until per-device secrets are introduced.
+- **Re-authenticating an existing device requires its `device_secret`**, not just
+  the widget token and `udid`. The widget token is shared by every device of a
+  tenant, so it alone doesn't identify the caller; `device_secret` is issued once
+  at a device's first sign-in (never recoverable afterwards) and is the actual
+  proof of possession for that specific device. Without it, anyone holding the
+  tenant's widget token plus a known `udid` could otherwise authenticate as that
+  device's user. Treat `device_secret` as a non-shareable credential, the same as
+  a password — a client that loses it cannot recover the same device identity and
+  must be treated as re-registering.
 - Device users are role `Visitor` — they cannot administer anything. Raise
   privilege via the normal member/admin flow if a device user needs more.
 - `Access-Control-Allow-Origin: *` is intentional (arbitrary customer sites embed the
@@ -280,6 +320,8 @@ the tenant.
 
 - [ ] Admin-created widget token available to the client (env/secret/config).
 - [ ] Stable per-install `udid` generated and persisted.
+- [ ] `device_secret` from a device's first sign-in persisted alongside `udid`
+      and sent as `device_secret` on every later sign-in for that device.
 - [ ] `POST /widget/signin` implemented with both token/udid and id_token paths.
 - [ ] JWT stored; attached as `Authorization: Bearer` on widget requests.
 - [ ] 401 → re-sign-in; 429 → exponential backoff; 422 → refresh id_token.

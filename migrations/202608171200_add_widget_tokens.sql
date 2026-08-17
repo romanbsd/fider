@@ -13,6 +13,13 @@ CREATE INDEX IF NOT EXISTS widget_tokens_tenant_id_idx ON widget_tokens (tenant_
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS device_hash TEXT;
 
+-- Hash of the per-device secret issued at a device's first widget sign-in,
+-- required to re-authenticate that device afterwards. Proves possession of
+-- something beyond the shared tenant widget token, which every device of a
+-- tenant uses, so a token holder can't authenticate as an arbitrary known
+-- device_hash. Empty for every non-device user.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS device_secret_hash TEXT;
+
 -- A concurrent index build that was interrupted can leave an invalid index
 -- behind; IF NOT EXISTS alone would then skip building it forever. The
 -- migration runner only executes this DROP when the index is actually

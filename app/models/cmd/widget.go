@@ -26,10 +26,20 @@ type UpdateWidgetTokenLastUsed struct {
 // RegisterDeviceUser ensures a device user exists for the given device hash.
 // Result holds the resolved (existing or newly created) user and Created
 // reports whether a new user row was inserted.
+//
+// A first registration (no existing device_hash row) always succeeds and
+// returns a freshly generated NewDeviceSecret the caller must store and
+// present on every later sign-in for that device. Re-authenticating an
+// existing device requires DeviceSecret to match what was issued at its
+// first registration (fails with app.ErrDeviceSecretMismatch otherwise) —
+// without this, the shared tenant widget token alone would let any holder
+// authenticate as any known device_hash.
 type RegisterDeviceUser struct {
-	DeviceHash string
-	Name       string
-	Email      string
-	Result     *entity.User
-	Created    bool
+	DeviceHash      string
+	Name            string
+	Email           string
+	DeviceSecret    string
+	Result          *entity.User
+	Created         bool
+	NewDeviceSecret string
 }

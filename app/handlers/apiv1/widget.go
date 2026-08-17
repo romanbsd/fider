@@ -29,6 +29,10 @@ type widgetSignInInput struct {
 	Name    string `json:"name"`
 	Email   string `json:"email"`
 	IDToken string `json:"id_token"`
+	// DeviceSecret is required to re-authenticate an already-registered
+	// device (returned as device_secret in the response to that device's
+	// first sign-in); empty for a device's first sign-in.
+	DeviceSecret string `json:"device_secret"`
 }
 
 // WidgetSignIn authenticates a feedback widget device (or a mobile client via an
@@ -41,8 +45,9 @@ func WidgetSignIn() web.HandlerFunc {
 		}
 
 		var (
-			user       *entity.User
-			widgetHash string
+			user            *entity.User
+			widgetHash      string
+			newDeviceSecret string
 		)
 		if input.IDToken != "" {
 			u, err := signInByIDToken(c, input.IDToken)
@@ -56,12 +61,13 @@ func WidgetSignIn() web.HandlerFunc {
 					"errors": web.Map{"token": "token is required, udid must be 8-128 chars"},
 				})
 			}
-			u, err := signInByWidgetToken(c, input)
+			u, secret, err := signInByWidgetToken(c, input)
 			if err != nil {
 				return c.Unauthorized()
 			}
 			user = u
 			widgetHash = entity.HashWidgetToken(input.Token)
+			newDeviceSecret = secret
 		}
 
 		token, err := jwt.Encode(jwt.WidgetClaims{
@@ -81,10 +87,17 @@ func WidgetSignIn() web.HandlerFunc {
 			return c.Failure(err)
 		}
 
-		return c.Ok(web.Map{
+		resp := web.Map{
 			"token": token,
 			"user":  user,
-		})
+		}
+		if newDeviceSecret != "" {
+			// Only returned on a device's first sign-in; the client must store
+			// it and present it as device_secret on every later sign-in for
+			// this device, since it's never recoverable after this response.
+			resp["device_secret"] = newDeviceSecret
+		}
+		return c.Ok(resp)
 	}
 }
 
@@ -95,21 +108,22 @@ func WidgetSignOut() web.HandlerFunc {
 	}
 }
 
-func signInByWidgetToken(c *web.Context, input *widgetSignInInput) (*entity.User, error) {
+func signInByWidgetToken(c *web.Context, input *widgetSignInInput) (*entity.User, string, error) {
 	if err := widgettoken.Validate(c, input.Token); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	register := &cmd.RegisterDeviceUser{
-		DeviceHash: widgettoken.DeviceHash(input.UDID),
-		Name:       input.Name,
-		Email:      input.Email,
+		DeviceHash:   widgettoken.DeviceHash(input.UDID),
+		Name:         input.Name,
+		Email:        input.Email,
+		DeviceSecret: input.DeviceSecret,
 	}
 	if err := bus.Dispatch(c, register); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return register.Result, nil
+	return register.Result, register.NewDeviceSecret, nil
 }
 
 func signInByIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {

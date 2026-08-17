@@ -129,7 +129,8 @@ func registerDeviceUser(ctx context.Context, c *cmd.RegisterDeviceUser) error {
 			return errors.Wrap(err, "failed to register device user")
 		}
 
-		id, _, err := insertUser(trx, tenant, name, email, enum.RoleVisitor, c.DeviceHash)
+		newSecret := entity.GenerateDeviceSecret()
+		id, _, err := insertUser(trx, tenant, name, email, enum.RoleVisitor, c.DeviceHash, entity.HashDeviceSecret(newSecret))
 		if err != nil && errors.Cause(err) == app.ErrEmailTaken {
 			// Email is only a cosmetic display field for device-registered
 			// Visitor users (device_hash is the real identity). Surfacing this
@@ -140,7 +141,7 @@ func registerDeviceUser(ctx context.Context, c *cmd.RegisterDeviceUser) error {
 			if _, rbErr := trx.Execute("ROLLBACK TO SAVEPOINT device_email_retry"); rbErr != nil {
 				return errors.Wrap(rbErr, "failed to register device user")
 			}
-			id, _, err = insertUser(trx, tenant, name, "", enum.RoleVisitor, c.DeviceHash)
+			id, _, err = insertUser(trx, tenant, name, "", enum.RoleVisitor, c.DeviceHash, entity.HashDeviceSecret(newSecret))
 		}
 		c.Created = err == nil
 		if err != nil && errors.Cause(err) != app.ErrNotFound {
@@ -153,6 +154,7 @@ func registerDeviceUser(ctx context.Context, c *cmd.RegisterDeviceUser) error {
 				return errors.Wrap(err, "failed to load registered device user")
 			}
 			c.Result = registered
+			c.NewDeviceSecret = newSecret
 			return nil
 		}
 
@@ -160,6 +162,18 @@ func registerDeviceUser(ctx context.Context, c *cmd.RegisterDeviceUser) error {
 		if err != nil {
 			return errors.Wrap(err, "failed to load existing device user")
 		}
+
+		// Re-authenticating an existing device requires proof of possession of
+		// the secret issued at its first registration: the tenant-wide widget
+		// token alone (already validated by the caller before dispatching this
+		// command) is not enough, since every legitimate device of the tenant
+		// shares it. Without this check, a token holder could authenticate as
+		// any other known device_hash.
+		if existing.DeviceSecretHash == "" || c.DeviceSecret == "" ||
+			entity.HashDeviceSecret(c.DeviceSecret) != existing.DeviceSecretHash {
+			return app.ErrDeviceSecretMismatch
+		}
+
 		c.Result = existing
 		return nil
 	})

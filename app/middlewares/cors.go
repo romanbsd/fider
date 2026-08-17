@@ -28,7 +28,7 @@ func WidgetCORS() web.MiddlewareFunc {
 		return func(c *web.Context) error {
 			c.Response.Header().Set("Access-Control-Allow-Origin", "*")
 			c.Response.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Widget-Token, X-Widget-UDID")
+			c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Widget-Token, X-Widget-UDID, X-Widget-Device-Secret")
 			c.Response.Header().Set("Access-Control-Max-Age", "86400")
 
 			if c.Request.Method == http.MethodOptions {
@@ -53,7 +53,7 @@ func VisitorWidgetCORS() web.MiddlewareFunc {
 		return func(c *web.Context) error {
 			if user := c.User(); user != nil && user.Role == enum.RoleVisitor {
 				c.Response.Header().Set("Access-Control-Allow-Origin", "*")
-				c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Widget-Token, X-Widget-UDID")
+				c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Widget-Token, X-Widget-UDID, X-Widget-Device-Secret")
 			}
 			return next(c)
 		}

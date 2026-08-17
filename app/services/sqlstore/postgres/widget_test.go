@@ -118,13 +118,27 @@ func TestWidgetTokenStorage_DeviceUser(t *testing.T) {
 	Expect(register.Result.ID > 0).IsTrue()
 	Expect(register.Result.Name).Equals("Jane Device")
 	Expect(register.Result.Email).Equals("jane@device.io")
+	Expect(register.NewDeviceSecret).NotEquals("")
 
-	// same device hash reuses the same user
-	again := &cmd.RegisterDeviceUser{DeviceHash: "device-123", Name: "Jane Device", Email: "jane@device.io"}
+	// re-authenticating the same device without the secret issued at its
+	// first registration is rejected: the shared tenant widget token alone
+	// (validated upstream of this command) must not be enough to
+	// authenticate as an arbitrary known device_hash
+	noSecret := &cmd.RegisterDeviceUser{DeviceHash: "device-123", Name: "Jane Device", Email: "jane@device.io"}
+	err = bus.Dispatch(demoTenantCtx, noSecret)
+	Expect(errors.Cause(err)).Equals(app.ErrDeviceSecretMismatch)
+
+	wrongSecret := &cmd.RegisterDeviceUser{DeviceHash: "device-123", Name: "Jane Device", Email: "jane@device.io", DeviceSecret: "not-the-right-secret"}
+	err = bus.Dispatch(demoTenantCtx, wrongSecret)
+	Expect(errors.Cause(err)).Equals(app.ErrDeviceSecretMismatch)
+
+	// same device hash + correct secret reuses the same user
+	again := &cmd.RegisterDeviceUser{DeviceHash: "device-123", Name: "Jane Device", Email: "jane@device.io", DeviceSecret: register.NewDeviceSecret}
 	err = bus.Dispatch(demoTenantCtx, again)
 	Expect(err).IsNil()
 	Expect(again.Created).IsFalse()
 	Expect(again.Result.ID).Equals(register.Result.ID)
+	Expect(again.NewDeviceSecret).Equals("")
 
 	// a different device hash creates a distinct user
 	other := &cmd.RegisterDeviceUser{DeviceHash: "device-456", Name: "John Device", Email: "john@device.io"}

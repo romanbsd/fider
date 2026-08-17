@@ -106,9 +106,9 @@ func WidgetAuth() web.MiddlewareFunc {
 				return authenticateMobile(c, token, next)
 			}
 
-			widgetToken, udid := widgetCredentials(c)
+			widgetToken, udid, deviceSecret := widgetCredentials(c)
 			if widgetToken != "" && widgettoken.ValidUDID(udid) {
-				user, err := authenticateWidget(c, widgetToken, udid)
+				user, err := authenticateWidget(c, widgetToken, udid, deviceSecret)
 				if err != nil {
 					return c.Unauthorized()
 				}
@@ -121,11 +121,11 @@ func WidgetAuth() web.MiddlewareFunc {
 	}
 }
 
-func widgetCredentials(c *web.Context) (token, udid string) {
-	return c.Request.GetHeader("X-Widget-Token"), c.Request.GetHeader("X-Widget-UDID")
+func widgetCredentials(c *web.Context) (token, udid, deviceSecret string) {
+	return c.Request.GetHeader("X-Widget-Token"), c.Request.GetHeader("X-Widget-UDID"), c.Request.GetHeader("X-Widget-Device-Secret")
 }
 
-func authenticateWidget(c *web.Context, rawToken, udid string) (*entity.User, error) {
+func authenticateWidget(c *web.Context, rawToken, udid, deviceSecret string) (*entity.User, error) {
 	if err := widgettoken.Validate(c, rawToken); err != nil {
 		return nil, err
 	}
@@ -133,6 +133,15 @@ func authenticateWidget(c *web.Context, rawToken, udid string) (*entity.User, er
 	byDevice := &query.GetUserByDeviceHash{DeviceHash: widgettoken.DeviceHash(udid)}
 	if err := bus.Dispatch(c, byDevice); err != nil {
 		return nil, err
+	}
+
+	// The tenant-wide widget token alone identifies the tenant, not the
+	// caller: every device shares it. Require proof of possession of the
+	// secret issued to this specific device at its first sign-in, so a token
+	// holder can't authenticate as any other known device_hash.
+	if byDevice.Result.DeviceSecretHash == "" || deviceSecret == "" ||
+		entity.HashDeviceSecret(deviceSecret) != byDevice.Result.DeviceSecretHash {
+		return nil, app.ErrDeviceSecretMismatch
 	}
 
 	if byDevice.Result.Status == enum.UserBlocked {
