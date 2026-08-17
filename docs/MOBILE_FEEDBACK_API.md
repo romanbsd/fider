@@ -90,11 +90,12 @@ of:
 - The `/widget/signin` path is exempt from authentication (it *is* the login).
 - Token/device mismatch, unknown device, missing/incorrect device secret, or a
   revoked token → `401`.
-- `X-Widget-UDID` must be a well-formed UUID (any RFC 4122 version — a bare
-  length check isn't enough: the device-secret protection on first
-  registration only works if `udid` actually carries the entropy a real UUID
-  v4 has, so it can't be feasibly pre-registered ahead of a legitimate
-  device — see [4.4 Security notes](#44-security-notes)).
+- `X-Widget-UDID` must be a well-formed UUID **v4** specifically — a bare
+  length check isn't enough, and neither is accepting any UUID version: v1 is
+  time/MAC-based and predictable, v3/v5 are deterministic hashes of a
+  namespace+name an attacker could precompute. Only v4's ~122 bits of CSPRNG
+  entropy make a `udid` infeasible to pre-register ahead of a legitimate
+  device — see [4.4 Security notes](#44-security-notes).
 - The widget token alone identifies the *tenant*, not the caller — every device
   of a tenant shares it. `X-Widget-Device-Secret` is the caller's actual proof
   of identity for this specific device; see
@@ -315,7 +316,7 @@ the tenant.
   holding only the widget token can register a brand-new `udid` before its
   legitimate owner ever does, claiming that device identity and locking the
   real device out with no recovery. The server rejects any `udid` that isn't
-  a well-formed UUID specifically to make this impractical: pre-registering a
+  a well-formed UUID **v4** specifically to make this impractical: pre-registering a
   meaningful share of a real UUID v4's ~122-bit space isn't feasible. This
   depends on the *server-side format check*, not client cooperation — but it
   does not, and cannot, prevent a client's own duplicate first-launch request

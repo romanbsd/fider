@@ -96,9 +96,19 @@ func TestValidUDID(t *testing.T) {
 		{name: "valid uuid v4", udid: "550e8400-e29b-41d4-a716-446655440000", want: true},
 		{name: "valid uuid v4 uppercase", udid: "550E8400-E29B-41D4-A716-446655440000", want: true},
 		{
-			name: "valid uuid v1",
+			name: "uuid v1 rejected: time/MAC-based, predictable, not random",
 			udid: "550e8400-e29b-11d4-a716-446655440000",
-			want: true,
+			want: false,
+		},
+		{
+			name: "uuid v3 rejected: deterministic hash of namespace+name",
+			udid: "550e8400-e29b-31d4-a716-446655440000",
+			want: false,
+		},
+		{
+			name: "uuid v5 rejected: deterministic hash of namespace+name",
+			udid: "550e8400-e29b-51d4-a716-446655440000",
+			want: false,
 		},
 		{name: "empty", udid: "", want: false},
 		{name: "short non-uuid string within old length bounds", udid: "device-123", want: false},

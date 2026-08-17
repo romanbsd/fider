@@ -19,7 +19,11 @@ func DeviceHash(udid string) string {
 	return crypto.SHA256(udid)
 }
 
-// udidPattern matches a well-formed RFC 4122 UUID (any version).
+// udidPattern matches a well-formed UUID v4. Only v4 is generated with real
+// entropy (a CSPRNG) — v1 is time/MAC-based and predictable, v3/v5 are
+// deterministic hashes of a namespace+name, so an attacker could precompute
+// one. Accepting any version would have let a widget-token holder
+// pre-register such a udid ahead of a legitimate device.
 var udidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
 // ValidUDID reports whether udid is a well-formed UUID for X-Widget-UDID /
