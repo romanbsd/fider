@@ -11,6 +11,9 @@ var InvitePlaceholder = "%invite%"
 // ErrUserIDRequired is used when OAuth integration returns an empty user ID
 var ErrUserIDRequired = errors.New("UserID is required during OAuth integration")
 
+// ErrEmailTaken is returned when an insert violates the per-tenant email uniqueness constraint
+var ErrEmailTaken = errors.New("email address is already in use")
+
 type key string
 
 func createKey(name string) key {

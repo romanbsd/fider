@@ -160,6 +160,7 @@ func TestWidgetAuth_MobileJWT(t *testing.T) {
 		UserID:        mobileUser.ID,
 		UserName:      mobileUser.Name,
 		SecurityStamp: mobileUser.SecurityStamp,
+		Origin:        jwt.FiderClaimsOriginAPI,
 	})
 
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {

@@ -3,6 +3,7 @@ package apiv1
 import (
 	"time"
 
+	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/handlers"
 	"github.com/getfider/fider/app/models/cmd"
 	"github.com/getfider/fider/app/models/entity"
@@ -58,6 +59,9 @@ func WidgetSignIn() web.HandlerFunc {
 			}
 			u, err := signInByWidgetToken(c, input)
 			if err != nil {
+				if errors.Cause(err) == app.ErrEmailTaken {
+					return c.HandleValidation(validate.Failed(err.Error()))
+				}
 				return c.Unauthorized()
 			}
 			user = u

@@ -43,6 +43,9 @@ func insertUser(trx *dbx.Trx, tenant *entity.Tenant, name, email string, role en
 	}
 
 	if err := trx.Get(&id, "INSERT INTO users ("+columns+") VALUES ("+placeholders+")"+conflict+" RETURNING id", args...); err != nil {
+		if pqErr, ok := errors.Cause(err).(*pq.Error); ok && pqErr.Constraint == "user_email_unique_idx" {
+			return 0, "", app.ErrEmailTaken
+		}
 		return 0, "", err
 	}
 	return id, stamp, nil

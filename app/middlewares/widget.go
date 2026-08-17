@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/models/entity"
+	"github.com/getfider/fider/app/models/enum"
 	"github.com/getfider/fider/app/models/query"
 	"github.com/getfider/fider/app/pkg/bus"
 	"github.com/getfider/fider/app/pkg/env"
@@ -40,9 +42,11 @@ func WidgetRateLimit() web.MiddlewareFunc {
 				return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 			}
 
-			// Requests that are not yet attributed to a user (today: the sign-in
-			// endpoint) keep a per-client limit on top of the tenant ceiling.
-			if !c.IsAuthenticated() {
+			// The sign-in endpoint is the only unauthenticated widget route (this
+			// middleware runs before WidgetAuth, so c.IsAuthenticated() is never
+			// true here yet); keep a per-client limit on top of the tenant ceiling
+			// so one client cannot starve it.
+			if c.Request.URL.Path == "/widget/signin" {
 				clientKey := fmt.Sprintf("%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr(), c.Request.GetHeader("X-Forwarded-For")))
 				if !widgetClientRateLimiter.Allow(clientKey) {
 					return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
@@ -132,12 +136,16 @@ func authenticateWidget(c *web.Context, rawToken, udid string) (*entity.User, er
 		return nil, err
 	}
 
+	if byDevice.Result.Status == enum.UserBlocked {
+		return nil, app.ErrNotFound
+	}
+
 	return byDevice.Result, nil
 }
 
 func authenticateMobile(c *web.Context, token string, next web.HandlerFunc) error {
 	claims, err := jwt.DecodeFiderClaims(token)
-	if err != nil {
+	if err != nil || claims.Origin != jwt.FiderClaimsOriginAPI {
 		return c.Unauthorized()
 	}
 

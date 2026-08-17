@@ -43,10 +43,14 @@ func createWidgetToken(ctx context.Context, c *cmd.CreateWidgetToken) error {
 
 func revokeWidgetToken(ctx context.Context, c *cmd.RevokeWidgetToken) error {
 	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, user *entity.User) error {
-		if _, err := trx.Execute(
+		rows, err := trx.Execute(
 			"UPDATE widget_tokens SET revoked_at = $3 WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
-			c.TokenID, tenant.ID, time.Now()); err != nil {
+			c.TokenID, tenant.ID, time.Now())
+		if err != nil {
 			return errors.Wrap(err, "failed to revoke widget token")
+		}
+		if rows == 0 {
+			return app.ErrNotFound
 		}
 		return nil
 	})
@@ -115,6 +119,9 @@ func registerDeviceUser(ctx context.Context, c *cmd.RegisterDeviceUser) error {
 
 		id, _, err := insertUser(trx, tenant, name, email, enum.RoleVisitor, c.DeviceHash)
 		c.Created = err == nil
+		if err != nil && errors.Cause(err) == app.ErrEmailTaken {
+			return app.ErrEmailTaken
+		}
 		if err != nil && errors.Cause(err) != app.ErrNotFound {
 			return errors.Wrap(err, "failed to register device user")
 		}
