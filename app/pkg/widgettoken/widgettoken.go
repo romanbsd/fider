@@ -20,7 +20,7 @@ func DeviceHash(udid string) string {
 }
 
 // udidPattern matches a well-formed RFC 4122 UUID (any version).
-var udidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+var udidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
 // ValidUDID reports whether udid is a well-formed UUID for X-Widget-UDID /
 // the sign-in udid field. The device-secret protection on first registration
