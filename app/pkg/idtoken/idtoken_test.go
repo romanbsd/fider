@@ -252,3 +252,33 @@ func TestValidator_KeyRotation(t *testing.T) {
 	Expect(err).IsNotNil()
 	Expect(errors.Cause(err).Error()).ContainsSubstring("keyset does not contain")
 }
+
+func TestValidator_RefreshFailure_FailsClosed(t *testing.T) {
+	RegisterT(t)
+
+	priv, pub := generateTestKeys()
+	var down = false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if down {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		jwksHandler(pub)(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	validator := New(Config{JWKSURL: server.URL, Issuer: testIssuer, ClientID: testAudience})
+	signed := signToken(priv, nil)
+
+	// initial fetch works
+	_, err := validator.Verify(context.Background(), signed)
+	Expect(err).IsNil()
+
+	// past the key-set TTL the validator must refresh; a failing refresh must
+	// fail closed rather than keep trusting the cached (possibly rotated-away) key
+	validator.lastLoad = time.Now().Add(-2 * keySetTTL)
+	down = true
+
+	_, err = validator.Verify(context.Background(), signed)
+	Expect(err).IsNotNil()
+}

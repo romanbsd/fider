@@ -3,10 +3,11 @@
 ## Status
 
 **Implemented (backend).** The feedback widget and mobile client sign-in channel is
-live in this repository. There is **no widget UI** yet — the server only exposes the
-authentication, token-management and rate-limiting surface that clients build on.
-Data operations (posts, comments, votes) are out of scope for this channel for now
-and are **not** exposed under `/widget/*`.
+live in this repository. Clients authenticate via `/widget/signin` and then use the
+returned JWT against the **existing** `/api/v1/*` API (posts, comments, votes) as an
+ordinary authenticated user — with a real role for id_token sign-ins, or a
+`Visitor` device user for widget-token sign-ins. There is **no widget UI** yet and
+no `/widget/*` data routes: the JWT itself unlocks the existing API.
 
 ## 1. Overview
 
@@ -205,13 +206,14 @@ the tenant.
 
    Store the returned `token` (JWT). On a `401` sign-in response (revoked token)
    drop the stored JWT and surface "widget not configured".
-4. **Authenticated requests** send either:
-   - `Authorization: Bearer <jwt>`, or
-   - statelessly, `X-Widget-Token` + `X-Widget-UDID` headers.
-   (JWT is preferred: it avoids re-validating the widget token on every request
-   and keeps working even while the widget token is rotated. The trade-off is that
-   a revoked widget token does not invalidate an already-issued JWT — see
-   [4.4 Security notes](#44-security-notes).)
+4. **Authenticated requests** send `Authorization: Bearer <jwt>`. The JWT is
+   accepted by the **existing `/api/v1/*` member API** (posts, comments, votes,
+   subscriptions, settings) with the signed-in user's real role; device users
+   (Widget Visitor) can vote and create posts on public communities. Sending the
+   JWT instead of the raw widget-token headers avoids re-validating the token on
+   every request. Note that a revoked widget token invalidates any JWT issued
+   from it (each device JWT is bound to its token — see
+   [4.4 Security notes](#44-security-notes)).
 5. **Sign out** — `GET /widget/signout` with credentials, then delete the JWT. The
    device user and widget token remain valid; re-sign-in uses the same `udid`.
 
@@ -229,7 +231,12 @@ the tenant.
    { "id_token": "<oidc-id-token>" }
    ```
 
-   Store the returned Fider JWT and reuse it until it fails.
+   Store the returned Fider JWT and reuse it until it fails. The user is matched
+   to an existing tenant account by Google/Apple subject, then by email, or
+   provisioned as a new Visitor when unknown. From here on the app calls the
+   existing `/api/v1/*` API with `Authorization: Bearer <jwt>` exactly like any
+   other authenticated user — including admin routes when the account is an
+   administrator.
 4. Optionally persist the user (name/email) from the `user` field for display.
 
 ### 4.3 Retry & error handling
@@ -239,7 +246,7 @@ the tenant.
 | `200` | Store JWT |
 | `400` | Bug in client request; log |
 | `401` | Sign-in: widget token invalid/revoked — show "widget not configured". Bearer JWT: session expired or user changed — re-run the sign-in flow |
-| `422` | id_token rejected (expired / wrong audience / unverified email) — re-trigger native sign-in |
+| `422` | id_token rejected (expired / wrong audience / unverified email / not invited on a private tenant) — re-trigger native sign-in |
 | `429` | **Back off exponentially** (respect `Retry-After` if present); do not retry in a tight loop |
 
 ### 4.4 Security notes
@@ -250,15 +257,16 @@ the tenant.
   is never persisted.
 - JWT expiry is 365 days; clients should be prepared for 401 at any time and
   re-sign-in.
-- **Token revocation is not retroactive**: revoking a widget token blocks new
-  sign-ins and the stateless `X-Widget-Token` path, but JWTs issued before the
-  revocation remain valid until they expire or the device user is blocked. Plan
-  revocation assuming already-signed-in devices keep access for the JWT lifetime.
-- **Device identity is as strong as the `udid`.** Sign-in proves possession of
+- **Token revocation is retroactive for device JWTs**: each JWT issued from a
+  device sign-in is bound to its widget token, and every authenticated request
+  re-checks that the token is still active. Revoking a widget token immediately
+  invalidates the JWTs issued through it. JWTs issued to real users via id_token
+  are unaffected (they are not tied to a widget token).
+- **Device identity is as strong as the `udid`.** Revoking the widget token does
+  not help if the raw `udid` itself is compromised. Sign-in proves possession of
   the tenant widget token plus a device id; anyone holding both can authenticate
   as that device user (device users are role `Visitor`). Treat `udid` as a
-  non-shareable credential, and bind data routes to per-device secrets before
-  exposing higher-privilege operations.
+  non-shareable credential until per-device secrets are introduced.
 - Device users are role `Visitor` — they cannot administer anything. Raise
   privilege via the normal member/admin flow if a device user needs more.
 - `Access-Control-Allow-Origin: *` is intentional (arbitrary customer sites embed the
@@ -276,10 +284,9 @@ the tenant.
 
 ## 6. Not implemented (removed / future work)
 
-The originally-proposed read/write data routes under `/api/v1/widget/*` (posts,
-comments, votes, reactions, tags, subscriptions, search) are **not part of this
-change** — there is no widget UI consuming them yet, and they would duplicate the
-existing member API. When the embedded widget UI is built, those endpoints can be
-re-added under the same `/widget/*` group (behind `WidgetAuth`) or the widget JWT can
-be accepted by the existing `/api/v1/*` member routes. Until then the implemented
-surface (sign-in, sign-out, token lifecycle, rate limiting) is the contract.
+Read/write data routes under `/api/v1/widget/*` (posts, comments, votes,
+reactions, tags, subscriptions, search) are **not implemented** and are not needed:
+the JWT issued by `/widget/signin` is accepted by the existing `/api/v1/*` member
+API directly, so clients use the standard endpoints. The widget channel remains a
+thin authentication layer (sign-in, sign-out, token lifecycle, rate limiting) on
+top of it.

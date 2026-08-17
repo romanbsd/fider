@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/getfider/fider/app/models/entity"
@@ -43,7 +44,7 @@ func WidgetRateLimit() web.MiddlewareFunc {
 			// Requests that are not yet attributed to a user (today: the sign-in
 			// endpoint) keep a per-client limit on top of the tenant ceiling.
 			if !c.IsAuthenticated() {
-				clientKey := fmt.Sprintf("%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr()))
+				clientKey := fmt.Sprintf("%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr(), c.Request.GetHeader("X-Forwarded-For")))
 				if !widgetClientRateLimiter.Allow(clientKey) {
 					return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 				}
@@ -54,10 +55,22 @@ func WidgetRateLimit() web.MiddlewareFunc {
 	}
 }
 
-func clientIP(addr string) string {
-	host, _, err := net.SplitHostPort(addr)
+// clientIP returns the caller address, honouring X-Forwarded-For when the
+// request arrives through a reverse proxy (the first entry is the original
+// client). Falls back to RemoteAddr otherwise. When running behind a proxy this
+// keeps per-client buckets distinct instead of grouping every caller under the
+// proxy address.
+func clientIP(remoteAddr, forwardedFor string) string {
+	if forwardedFor != "" {
+		if first, _, ok := strings.Cut(forwardedFor, ","); ok {
+			return strings.TrimSpace(first)
+		}
+		return strings.TrimSpace(forwardedFor)
+	}
+
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		return addr
+		return remoteAddr
 	}
 	return host
 }
@@ -125,6 +138,10 @@ func authenticateMobile(c *web.Context, token string, next web.HandlerFunc) erro
 		return c.Unauthorized()
 	}
 	if claims.SecurityStamp != "" && user.SecurityStamp != claims.SecurityStamp {
+		return c.Unauthorized()
+	}
+	if widgettoken.ValidateSession(c, claims) != nil {
+		// the widget token this JWT was issued from has been revoked
 		return c.Unauthorized()
 	}
 	if user.Status == enum.UserBlocked {

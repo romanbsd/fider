@@ -6,6 +6,7 @@ import (
 	"github.com/getfider/fider/app/models/query"
 	"github.com/getfider/fider/app/pkg/bus"
 	"github.com/getfider/fider/app/pkg/crypto"
+	"github.com/getfider/fider/app/pkg/jwt"
 	"github.com/getfider/fider/app/pkg/web"
 )
 
@@ -28,4 +29,15 @@ func Validate(c *web.Context, rawToken string) error {
 	}
 
 	return bus.Dispatch(c, &cmd.UpdateWidgetTokenLastUsed{Hash: hash})
+}
+
+// ValidateSession checks that the widget token a device-user JWT was issued
+// from is still active. This makes widget-token revocation retroactively
+// invalidate already-issued device JWTs. Returns nil when the claims carry no
+// widget token (real-user sessions are unaffected).
+func ValidateSession(c *web.Context, claims *jwt.FiderClaims) error {
+	if claims.WidgetTokenHash == "" {
+		return nil
+	}
+	return bus.Dispatch(c, &query.GetWidgetTokenByHash{Hash: claims.WidgetTokenHash})
 }

@@ -40,7 +40,10 @@ func WidgetSignIn() web.HandlerFunc {
 			return c.Failure(err)
 		}
 
-		var user *entity.User
+		var (
+			user       *entity.User
+			widgetHash string
+		)
 		if input.IDToken != "" {
 			u, err := signInByIDToken(c, input.IDToken)
 			if err != nil {
@@ -58,14 +61,16 @@ func WidgetSignIn() web.HandlerFunc {
 				return c.Unauthorized()
 			}
 			user = u
+			widgetHash = entity.HashWidgetToken(input.Token)
 		}
 
 		token, err := jwt.Encode(jwt.FiderClaims{
-			UserID:        user.ID,
-			UserName:      user.Name,
-			UserEmail:     user.Email,
-			Origin:        jwt.FiderClaimsOriginAPI,
-			SecurityStamp: user.SecurityStamp,
+			UserID:          user.ID,
+			UserName:        user.Name,
+			UserEmail:       user.Email,
+			Origin:          jwt.FiderClaimsOriginAPI,
+			SecurityStamp:   user.SecurityStamp,
+			WidgetTokenHash: widgetHash,
 			Metadata: jwt.Metadata{
 				ExpiresAt: jwt.Time(time.Now().Add(365 * 24 * time.Hour)),
 			},

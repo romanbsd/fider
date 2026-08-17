@@ -60,3 +60,43 @@ func TestSplitStatements_Empty(t *testing.T) {
 		t.Fatalf("expected no statements, got %q", got)
 	}
 }
+
+func TestIsConcurrentMigration(t *testing.T) {
+	cases := []struct {
+		name      string
+		statements []string
+		want      bool
+	}{
+		{
+			name:       "plain create index",
+			statements: splitStatements("CREATE INDEX foo ON bar (id);"),
+			want:       false,
+		},
+		{
+			name:       "concurrent unique index",
+			statements: splitStatements("CREATE UNIQUE INDEX CONCURRENTLY foo ON bar (id);"),
+			want:       true,
+		},
+		{
+			name:       "concurrent index lower case",
+			statements: splitStatements("create index concurrently foo on bar (id);"),
+			want:       true,
+		},
+		{
+			name:       "word in a comment is ignored",
+			statements: splitStatements("-- concurrent index here\nCREATE TABLE foo (id int);"),
+			want:       false,
+		},
+		{
+			name:       "word in a comment lines up with real migration",
+			statements: splitStatements("-- blabla CONCURRENTLY blabla\nCREATE UNIQUE INDEX CONCURRENTLY foo ON bar (id);"),
+			want:       true,
+		},
+	}
+
+	for _, tc := range cases {
+		if got := isConcurrentMigration(tc.statements); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

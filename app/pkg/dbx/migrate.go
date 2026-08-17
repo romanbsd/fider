@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	stdErrors "errors"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,11 +98,16 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 	}
 
 	sql := string(content)
-	if strings.Contains(strings.ToUpper(sql), "CONCURRENTLY") {
+	statements := splitStatements(sql)
+	if isConcurrentMigration(statements) {
 		// CREATE INDEX CONCURRENTLY cannot run inside a transaction (nor share an
 		// implicit transaction with other statements), so the statements of this
-		// migration run one at a time, each in its own implicit transaction.
-		for _, statement := range splitStatements(sql) {
+		// migration run one at a time, each in its own implicit transaction. The
+		// migration is therefore not atomic: a failed run may leave earlier
+		// statements committed and unrecorded. Migration files using CONCURRENTLY
+		// should be written idempotently (IF NOT EXISTS etc.) so the next run can
+		// recover.
+		for _, statement := range statements {
 			if _, err := conn.Exec(statement); err != nil {
 				return errors.Wrap(err, "failed to run migration '%s'", fileName)
 			}
@@ -129,6 +135,33 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 	}
 
 	return trx.Commit()
+}
+
+var concurrentIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
+
+// isConcurrentMigration reports whether any statement of the script is a
+// CREATE INDEX CONCURRENTLY, ignoring leading line comments. Detection runs on
+// the split statements so the word CONCURRENTLY inside comments or quoted
+// identifiers cannot trigger the non-transactional path.
+func isConcurrentMigration(statements []string) bool {
+	for _, s := range statements {
+		cleaned := strings.TrimSpace(s)
+
+		// strip leading line comments
+		for strings.HasPrefix(cleaned, "--") {
+			end := strings.IndexByte(cleaned, '\n')
+			if end == -1 {
+				cleaned = ""
+				break
+			}
+			cleaned = strings.TrimSpace(cleaned[end+1:])
+		}
+
+		if concurrentIndexRegex.MatchString(cleaned) {
+			return true
+		}
+	}
+	return false
 }
 
 // splitStatements splits a SQL script into individual statements, honouring

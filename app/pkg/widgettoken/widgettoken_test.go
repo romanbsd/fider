@@ -11,6 +11,7 @@ import (
 	. "github.com/getfider/fider/app/pkg/assert"
 	"github.com/getfider/fider/app/pkg/bus"
 	"github.com/getfider/fider/app/pkg/errors"
+	"github.com/getfider/fider/app/pkg/jwt"
 	"github.com/getfider/fider/app/pkg/mock"
 	"github.com/getfider/fider/app/pkg/web"
 	"github.com/getfider/fider/app/pkg/widgettoken"
@@ -89,4 +90,40 @@ func TestDeviceHash_Deterministic(t *testing.T) {
 	first := widgettoken.DeviceHash("device-123")
 	Expect(first).Equals(widgettoken.DeviceHash("device-123"))
 	Expect(first).NotEquals(widgettoken.DeviceHash("device-456"))
+}
+
+func TestValidateSession(t *testing.T) {
+	RegisterT(t)
+
+	// a real-user JWT (no widget token) is always valid
+	server := mock.NewServer()
+	server.OnTenant(mock.DemoTenant)
+	var sessionErr error
+	_, _ = server.Execute(func(c *web.Context) error {
+		sessionErr = widgettoken.ValidateSession(c, &jwt.FiderClaims{})
+		return nil
+	})
+	Expect(sessionErr).IsNil()
+
+	// a device-user JWT with an active widget token is valid
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
+		return nil
+	})
+	_, _ = server.Execute(func(c *web.Context) error {
+		sessionErr = widgettoken.ValidateSession(c, &jwt.FiderClaims{WidgetTokenHash: "active-hash"})
+		return nil
+	})
+	Expect(sessionErr).IsNil()
+
+	// a device-user JWT whose widget token was revoked is rejected
+	bus.Reset()
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		return app.ErrNotFound
+	})
+	_, _ = server.Execute(func(c *web.Context) error {
+		sessionErr = widgettoken.ValidateSession(c, &jwt.FiderClaims{WidgetTokenHash: "revoked-hash"})
+		return nil
+	})
+	Expect(sessionErr).IsNotNil()
 }

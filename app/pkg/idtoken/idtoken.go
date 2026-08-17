@@ -157,12 +157,9 @@ func (v *Validator) getKey(ctx context.Context, kid string) (*rsa.PublicKey, err
 
 	// Refresh on an unknown kid or a stale key set so provider key rotation is
 	// picked up without a restart. The key set is replaced only after a
-	// successful fetch, so removed keys stop validating tokens.
+	// successful fetch, so removed keys stop validating tokens. A failed refresh
+	// fails closed: a stale key is never served past its TTL.
 	if err := v.fetchKeys(ctx); err != nil {
-		// Keep serving a previously cached key when a refresh fails.
-		if key, ok := v.keys[kid]; ok {
-			return key, nil
-		}
 		return nil, err
 	}
 

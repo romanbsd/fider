@@ -32,6 +32,10 @@ type FiderClaims struct {
 	UserEmail     string `json:"user/email"`
 	Origin        string `json:"origin"`
 	SecurityStamp string `json:"user/security_stamp,omitempty"`
+	// WidgetTokenHash links a device-user JWT to the widget token it was issued
+	// from, so revoking that token invalidates the session retroactively. Empty
+	// for JWTs issued to real users (cookie, id_token, API).
+	WidgetTokenHash string `json:"widgettoken/hash,omitempty"`
 	Metadata
 }
 

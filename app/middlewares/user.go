@@ -18,6 +18,7 @@ import (
 	"github.com/getfider/fider/app/pkg/jwt"
 	"github.com/getfider/fider/app/pkg/web"
 	webutil "github.com/getfider/fider/app/pkg/web/util"
+	"github.com/getfider/fider/app/pkg/widgettoken"
 )
 
 // User gets JWT Auth token from cookie and insert into context
@@ -78,37 +79,53 @@ func User() web.MiddlewareFunc {
 					return c.Redirect("/signin")
 				}
 			} else if c.Request.IsAPI() {
-				if apiKey, err := web.BearerToken(c.Request.GetHeader("Authorization")); err == nil {
-					getUserByAPIKey := &query.GetUserByAPIKey{APIKey: apiKey}
-					err = bus.Dispatch(c, getUserByAPIKey)
-					if err != nil {
-						if errors.Cause(err) == app.ErrNotFound {
-							return c.HandleValidation(validate.Failed("API Key is invalid"))
+				if bearer, err := web.BearerToken(c.Request.GetHeader("Authorization")); err == nil {
+					// Mobile clients authenticate with the API JWT issued by
+					// /widget/signin. A Web-origin token (UI session) is never
+					// accepted as a bearer credential.
+					if claims, err := jwt.DecodeFiderClaims(bearer); err == nil && claims.Origin == jwt.FiderClaimsOriginAPI {
+						if user, err = findUserByClaims(c, claims); err != nil || user == nil {
+							return c.JSON(401, web.Map{})
 						}
-						return err
-					}
-					user = getUserByAPIKey.Result
-
-					if !user.IsCollaborator() {
-						return c.HandleValidation(validate.Failed("API Key is invalid"))
-					}
-
-					if impersonateUserIDStr := c.Request.GetHeader("X-Fider-UserID"); impersonateUserIDStr != "" {
-						if !user.IsAdministrator() {
-							return c.HandleValidation(validate.Failed("Only Administrators are allowed to impersonate another user"))
+						if claims.SecurityStamp != "" && user.SecurityStamp != claims.SecurityStamp {
+							return c.JSON(401, web.Map{})
 						}
-						impersonateUserID, err := strconv.Atoi(impersonateUserIDStr)
-						if err != nil {
-							return c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
+						if widgettoken.ValidateSession(c, claims) != nil {
+							// the widget token this JWT was issued from has been revoked
+							return c.JSON(401, web.Map{})
 						}
-						userByImpersonateID := &query.GetUserByID{UserID: impersonateUserID, TenantID: user.Tenant.ID}
-						err = bus.Dispatch(c, userByImpersonateID)
-						user = userByImpersonateID.Result
+					} else {
+						getUserByAPIKey := &query.GetUserByAPIKey{APIKey: bearer}
+						err = bus.Dispatch(c, getUserByAPIKey)
 						if err != nil {
 							if errors.Cause(err) == app.ErrNotFound {
-								return c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
+								return c.HandleValidation(validate.Failed("API Key is invalid"))
 							}
 							return err
+						}
+						user = getUserByAPIKey.Result
+
+						if !user.IsCollaborator() {
+							return c.HandleValidation(validate.Failed("API Key is invalid"))
+						}
+
+						if impersonateUserIDStr := c.Request.GetHeader("X-Fider-UserID"); impersonateUserIDStr != "" {
+							if !user.IsAdministrator() {
+								return c.HandleValidation(validate.Failed("Only Administrators are allowed to impersonate another user"))
+							}
+							impersonateUserID, err := strconv.Atoi(impersonateUserIDStr)
+							if err != nil {
+								return c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
+							}
+							userByImpersonateID := &query.GetUserByID{UserID: impersonateUserID, TenantID: user.Tenant.ID}
+							err = bus.Dispatch(c, userByImpersonateID)
+							user = userByImpersonateID.Result
+							if err != nil {
+								if errors.Cause(err) == app.ErrNotFound {
+									return c.HandleValidation(validate.Failed(fmt.Sprintf("User not found for given impersonate UserID '%s'", impersonateUserIDStr)))
+								}
+								return err
+							}
 						}
 					}
 				}
