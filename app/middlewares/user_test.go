@@ -428,7 +428,63 @@ func TestUser_ValidMobileJWT_OnAPI(t *testing.T) {
 	Expect(response.Body.String()).Equals("Jon Snow")
 }
 
-func TestUser_IDTokenJWT_SignsInWithoutWidgetTokens(t *testing.T) {
+func TestUser_MobileApiMarker_OnlyForMobileJWT(t *testing.T) {
+	RegisterT(t)
+
+	jwtToken, err := jwt.Encode(jwt.FiderClaims{
+		UserID:        mock.JonSnow.ID,
+		UserName:      mock.JonSnow.Name,
+		UserEmail:     mock.JonSnow.Email,
+		Origin:        jwt.FiderClaimsOriginAPI,
+		SecurityStamp: mock.JonSnow.SecurityStamp,
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByAPIKey) error {
+		if q.APIKey == "1234567890" {
+			q.Result = mock.JonSnow
+			return nil
+		}
+		return app.ErrNotFound
+	})
+
+	// A mobile JWT authenticates through the API-origin JWT path and must be
+	// marked as a mobile session...
+	jwtServer := mock.NewServer()
+	jwtServer.Use(middlewares.User())
+	jwtStatus, _ := jwtServer.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1/posts").
+		AddHeader("Authorization", "Bearer "+jwtToken).
+		Execute(func(c *web.Context) error {
+			if c.Value(app.MobileApiCtxKey) != nil {
+				return c.NoContent(http.StatusNoContent)
+			}
+			return c.NoContent(http.StatusOK)
+		})
+	Expect(jwtStatus).Equals(http.StatusNoContent)
+
+	// ...but an API-key bearer session must not, keeping CORS same-origin-only.
+	keyServer := mock.NewServer()
+	keyServer.Use(middlewares.User())
+	keyStatus, _ := keyServer.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1/posts").
+		AddHeader("Authorization", "Bearer 1234567890").
+		Execute(func(c *web.Context) error {
+			if c.Value(app.MobileApiCtxKey) != nil {
+				return c.NoContent(http.StatusNoContent)
+			}
+			return c.NoContent(http.StatusOK)
+		})
+	Expect(keyStatus).Equals(http.StatusOK)
+}
+
+func TestUser_IDTokenJWT_ValidOnAPI(t *testing.T) {
 	RegisterT(t)
 
 	token, err := jwt.Encode(jwt.FiderClaims{
@@ -527,13 +583,11 @@ func TestUser_UIOriginJWT_NotAcceptedAsAPI(t *testing.T) {
 func TestUser_APIOriginJWT_NotAcceptedAsCookie(t *testing.T) {
 	RegisterT(t)
 
-	token, err := jwt.Encode(jwt.WidgetClaims{
-		FiderClaims: jwt.FiderClaims{
-			UserID:        mock.JonSnow.ID,
-			UserName:      mock.JonSnow.Name,
-			Origin:        jwt.FiderClaimsOriginAPI,
-			SecurityStamp: mock.JonSnow.SecurityStamp,
-		},
+	token, err := jwt.Encode(jwt.FiderClaims{
+		UserID:        mock.JonSnow.ID,
+		UserName:      mock.JonSnow.Name,
+		Origin:        jwt.FiderClaimsOriginAPI,
+		SecurityStamp: mock.JonSnow.SecurityStamp,
 	})
 	Expect(err).IsNil()
 
@@ -570,12 +624,10 @@ func TestUser_APIOriginCookie_ValidBearer_StillAuthenticates(t *testing.T) {
 
 	// The cookie carries an API-origin (widget) token that must never open a
 	// session by itself...
-	cookieToken, err := jwt.Encode(jwt.WidgetClaims{
-		FiderClaims: jwt.FiderClaims{
-			UserID:   999, // no such user: proves the cookie itself is ignored
-			UserName: "Widget",
-			Origin:   jwt.FiderClaimsOriginAPI,
-		},
+	cookieToken, err := jwt.Encode(jwt.FiderClaims{
+		UserID:   999, // no such user: proves the cookie itself is ignored
+		UserName: "Widget",
+		Origin:   jwt.FiderClaimsOriginAPI,
 	})
 	Expect(err).IsNil()
 

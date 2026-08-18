@@ -114,7 +114,7 @@ func WidgetAuth() web.MiddlewareFunc {
 }
 
 func authenticateMobile(c *web.Context, token string, next web.HandlerFunc) error {
-	claims, err := jwt.DecodeWidgetClaims(token)
+	claims, err := jwt.DecodeFiderClaims(token)
 	if err != nil || claims.Origin != jwt.FiderClaimsOriginAPI {
 		return c.Unauthorized()
 	}

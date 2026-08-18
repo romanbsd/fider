@@ -35,13 +35,6 @@ type FiderClaims struct {
 	Metadata
 }
 
-// WidgetClaims represents a JWT issued by the mobile sign-in endpoint.
-// Keeping mobile-session semantics out of FiderClaims prevents ordinary UI
-// sessions from accidentally acquiring mobile-session behaviour.
-type WidgetClaims struct {
-	FiderClaims
-}
-
 // OAuthClaims represents what goes into temporary OAuth JWT tokens
 type OAuthClaims struct {
 	OAuthID       string `json:"oauth/id"`
@@ -85,16 +78,6 @@ func DecodeFiderClaims(token string) (*FiderClaims, error) {
 	err := decode(token, claims)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to decode Fider claims")
-	}
-	return claims, nil
-}
-
-// DecodeWidgetClaims extracts claims from a widget/mobile JWT.
-func DecodeWidgetClaims(token string) (*WidgetClaims, error) {
-	claims := &WidgetClaims{}
-	err := decode(token, claims)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to decode widget claims")
 	}
 	return claims, nil
 }

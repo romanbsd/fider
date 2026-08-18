@@ -318,6 +318,7 @@ func routes(r *web.Engine) *web.Engine {
 				"/api/v1/taggable-users",
 				"/api/v1/posts/:number/votes",
 				"/api/v1/posts/:number/votes/toggle",
+				"/api/v1/posts/:number/status",
 				"/api/v1/posts/:number/subscription",
 			} {
 				apiCORS.Options(path, corsPreflight())

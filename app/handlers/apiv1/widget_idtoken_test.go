@@ -76,7 +76,7 @@ func TestMobileSignIn_IDToken_JWTExpiresInOneDay(t *testing.T) {
 		ExecutePostAsJSON(MobileSignIn(), `{ "id_token": "valid-id-token" }`)
 
 	Expect(status).Equals(http.StatusOK)
-	claims, err := jwt.DecodeWidgetClaims(body.String("token"))
+	claims, err := jwt.DecodeFiderClaims(body.String("token"))
 	Expect(err).IsNil()
 	Expect(claims.ExpiresAt.Time.Before(time.Now().Add(idTokenJWTDuration + time.Minute))).IsTrue()
 	Expect(claims.ExpiresAt.Time.After(time.Now().Add(idTokenJWTDuration - time.Hour))).IsTrue()

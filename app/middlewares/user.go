@@ -28,6 +28,7 @@ func User() web.MiddlewareFunc {
 				token            string
 				user             *entity.User
 				fromSignUpCookie bool
+				isMobileJWT      bool
 			)
 
 			cookie, err := c.Request.Cookie(web.CookieAuthName)
@@ -43,11 +44,10 @@ func User() web.MiddlewareFunc {
 			}
 
 			if token != "" {
-				// Decoded as WidgetClaims (a superset of FiderClaims) rather than
-				// FiderClaims directly so the Origin claim is available to reject
-				// mobile/mobile-API credentials when they are presented as an
+				// Decoded as FiderClaims; the Origin claim is used below to
+				// reject mobile-API credentials when they are presented as an
 				// auth cookie instead of a bearer token.
-				claims, err := jwt.DecodeWidgetClaims(token)
+				claims, err := jwt.DecodeFiderClaims(token)
 				if err != nil {
 					c.RemoveCookie(web.CookieAuthName)
 					return next(c)
@@ -70,7 +70,7 @@ func User() web.MiddlewareFunc {
 					token = ""
 					fromSignUpCookie = false
 				} else {
-					user, err = findUserByClaims(c, &claims.FiderClaims)
+					user, err = findUserByClaims(c, claims)
 					if err != nil {
 						return err
 					}
@@ -107,17 +107,12 @@ func User() web.MiddlewareFunc {
 			// Authorization header still authenticates.
 			if token == "" && c.Request.IsAPI() {
 				if bearer, err := web.BearerToken(c.Request.GetHeader("Authorization")); err == nil {
-					resolved, handled, err := resolveBearerUser(c, bearer)
+					resolved, mobileJWT, handled, err := resolveBearerUser(c, bearer)
 					if handled {
 						return err
 					}
 					user = resolved
-					// Mark the request as authenticated through the mobile API
-					// channel (an API-origin JWT). Middleware that runs later
-					// (e.g. CORS) uses this to permit cross-origin clients
-					// without widening the same-origin-only posture of ordinary
-					// UI-cookie sessions.
-					c.Set(app.MobileApiCtxKey, true)
+					isMobileJWT = mobileJWT
 				}
 			}
 
@@ -126,6 +121,17 @@ func User() web.MiddlewareFunc {
 				if user.Status == enum.UserBlocked {
 					c.RemoveCookie(web.CookieAuthName)
 					return c.Unauthorized()
+				}
+
+				// Mark requests authenticated through the mobile API channel
+				// (an API-origin JWT issued by /widget/signin). Middleware that
+				// runs later (e.g. CORS) uses this to permit cross-origin
+				// clients without widening the same-origin-only posture of
+				// ordinary UI-cookie sessions. Only set once the user is
+				// confirmed to belong to the current tenant, and never for
+				// API-key credentials.
+				if isMobileJWT {
+					c.Set(app.MobileApiCtxKey, true)
 				}
 
 				// Only now that the user is confirmed to belong to the current tenant do we
@@ -165,20 +171,24 @@ func findUserByClaims(c *web.Context, claims *jwt.FiderClaims) (*entity.User, er
 }
 
 // resolveBearerUser authenticates an API request's bearer token, accepting
-// either a mobile/widget JWT or a collaborator API key (optionally
-// impersonating another user via X-Fider-UserID). handled reports whether the
-// caller must stop and return err immediately without calling next() — err
-// may be nil in that case, since a response can already have been written
-// successfully (c.JSON/c.HandleValidation return nil on success).
-func resolveBearerUser(c *web.Context, bearer string) (*entity.User, bool, error) {
-	if claims, err := jwt.DecodeWidgetClaims(bearer); err == nil && claims.Origin == jwt.FiderClaimsOriginAPI {
+// either a mobile JWT (an API-origin JWT issued by /widget/signin) or a
+// collaborator API key (optionally impersonating another user via
+// X-Fider-UserID). mobileJWT reports whether the caller was authenticated
+// through the JWT path (API-key credentials are not mobile sessions).
+// handled reports whether the caller must stop and return err immediately
+// without calling next() — err may be nil in that case, since a response can
+// already have been written successfully (c.JSON/c.HandleValidation return
+// nil on success).
+func resolveBearerUser(c *web.Context, bearer string) (*entity.User, bool, bool, error) {
+	if claims, err := jwt.DecodeFiderClaims(bearer); err == nil && claims.Origin == jwt.FiderClaimsOriginAPI {
 		user, ok := resolveAPIClaimsUser(c, claims)
 		if !ok {
-			return nil, true, c.JSON(401, web.Map{})
+			return nil, false, true, c.JSON(401, web.Map{})
 		}
-		return user, false, nil
+		return user, true, false, nil
 	}
-	return resolveAPIKeyUser(c, bearer)
+	user, handled, err := resolveAPIKeyUser(c, bearer)
+	return user, false, handled, err
 }
 
 func resolveAPIKeyUser(c *web.Context, apiKey string) (*entity.User, bool, error) {
@@ -224,8 +234,8 @@ func resolveImpersonatedUser(c *web.Context, user *entity.User, impersonateUserI
 // against the current tenant: the user must exist in the tenant, its security
 // stamp must match, and it must not be blocked. Returns the tenant-scoped user,
 // or (nil, false) when the token is no longer usable.
-func resolveAPIClaimsUser(c *web.Context, claims *jwt.WidgetClaims) (*entity.User, bool) {
-	user, err := findUserByClaims(c, &claims.FiderClaims)
+func resolveAPIClaimsUser(c *web.Context, claims *jwt.FiderClaims) (*entity.User, bool) {
+	user, err := findUserByClaims(c, claims)
 	if err != nil || user == nil {
 		return nil, false
 	}

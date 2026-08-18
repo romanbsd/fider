@@ -65,16 +65,14 @@ func MobileSignIn() web.HandlerFunc {
 			return c.HandleValidation(validate.Failed(err.Error()))
 		}
 
-		token, err := jwt.Encode(jwt.WidgetClaims{
-			FiderClaims: jwt.FiderClaims{
-				UserID:        user.ID,
-				UserName:      user.Name,
-				UserEmail:     user.Email,
-				Origin:        jwt.FiderClaimsOriginAPI,
-				SecurityStamp: user.SecurityStamp,
-				Metadata: jwt.Metadata{
-					ExpiresAt: jwt.Time(time.Now().Add(idTokenJWTDuration)),
-				},
+		token, err := jwt.Encode(jwt.FiderClaims{
+			UserID:        user.ID,
+			UserName:      user.Name,
+			UserEmail:     user.Email,
+			Origin:        jwt.FiderClaimsOriginAPI,
+			SecurityStamp: user.SecurityStamp,
+			Metadata: jwt.Metadata{
+				ExpiresAt: jwt.Time(time.Now().Add(idTokenJWTDuration)),
 			},
 		})
 		if err != nil {
@@ -88,7 +86,11 @@ func MobileSignIn() web.HandlerFunc {
 	}
 }
 
-// MobileSignOut acknowledges the sign out request; the client discards its token
+// MobileSignOut acknowledges the sign out request. The server keeps nothing
+// per-session and does NOT invalidate the issued JWT: rotating the user's
+// security stamp here would log the user out everywhere (browser UI, other
+// devices). Sign-out is client-side only — the client must discard its stored
+// JWT, and the 24h token expires on its own.
 func MobileSignOut() web.HandlerFunc {
 	return func(c *web.Context) error {
 		return c.Ok(web.Map{})

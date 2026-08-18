@@ -77,12 +77,11 @@ func TestMigrate_ConcurrentIndex(t *testing.T) {
 }
 
 // TestMigrate_ConcurrentIndex_RepairsInvalidIndex verifies the retry-safe
-// policy used by CONCURRENTLY migrations (e.g.
-// migrations/202608171200_add_widget_tokens.sql): a build interrupted by a
-// constraint violation leaves an invalid index behind, and DROP INDEX IF
-// EXISTS before CREATE ... CONCURRENTLY IF NOT EXISTS repairs it on the next
-// run. Without the DROP, IF NOT EXISTS alone would see the invalid index by
-// name and skip rebuilding it forever.
+// policy used by CONCURRENTLY migrations: a build interrupted by a constraint
+// violation leaves an invalid index behind, and DROP INDEX IF EXISTS before
+// CREATE ... CONCURRENTLY IF NOT EXISTS repairs it on the next run. Without
+// the DROP, IF NOT EXISTS alone would see the invalid index by name and skip
+// rebuilding it forever.
 func TestMigrate_ConcurrentIndex_RepairsInvalidIndex(t *testing.T) {
 	setupMigrationTest(t)
 	ctx := context.Background()
