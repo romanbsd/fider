@@ -100,32 +100,72 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 	sql := string(content)
 	statements := splitStatements(sql)
 	if isConcurrentMigration(statements) {
-		// CREATE INDEX CONCURRENTLY cannot run inside a transaction (nor share an
-		// implicit transaction with other statements), so the statements of this
-		// migration run one at a time, each in its own implicit transaction. The
-		// migration is therefore not atomic: a failed run may leave earlier
-		// statements committed and unrecorded. Migration files using CONCURRENTLY
-		// should be written idempotently (IF NOT EXISTS etc.) so the next run can
+		// CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction (nor
+		// share an implicit transaction with other statements), so each
+		// CONCURRENTLY statement runs on its own, outside any transaction. Every
+		// other statement of the migration is batched into a single explicit
+		// transaction, keeping the DDL portion all-or-nothing. The migration as a
+		// whole is still not atomic: a failure between the transactional batch
+		// and a CONCURRENTLY statement leaves the batch committed and the
+		// migration unrecorded. Migration files using CONCURRENTLY must therefore
+		// be written idempotently (IF NOT EXISTS etc.) so the next run can
 		// recover.
+		commitBatch := func(trx *Trx) error {
+			if trx == nil {
+				return nil
+			}
+			if err := trx.Commit(); err != nil {
+				return errors.Wrap(err, "failed to commit migration batch")
+			}
+			return nil
+		}
+
+		var trx *Trx
 		for _, statement := range statements {
-			if name, ok := dropIndexTarget(statement); ok {
-				valid, err := indexIsValid(name)
+			stripped := stripLeadingComments(statement)
+			if concurrentIndexRegex.MatchString(stripped) || dropConcurrentIndexRegex.MatchString(stripped) {
+				// Commit the batch of ordinary statements accumulated so far:
+				// the CONCURRENTLY statement must run outside it.
+				if err := commitBatch(trx); err != nil {
+					return errors.Wrap(err, "failed to run migration '%s'", fileName)
+				}
+				trx = nil
+
+				if name, ok := dropIndexTarget(stripped); ok {
+					valid, err := indexIsValid(name)
+					if err != nil {
+						return errors.Wrap(err, "failed to run migration '%s'", fileName)
+					}
+					if valid {
+						// A valid index doesn't need repairing: dropping it here
+						// would open a window, before the CONCURRENTLY rebuild
+						// below completes, where concurrent writes could violate
+						// the constraint it enforces (and could then make the
+						// rebuild itself fail). Only an invalid index left behind
+						// by an interrupted CONCURRENTLY build needs dropping.
+						continue
+					}
+				}
+				if _, err := conn.Exec(statement); err != nil {
+					return errors.Wrap(err, "failed to run migration '%s'", fileName)
+				}
+				continue
+			}
+
+			if trx == nil {
+				trx, err = BeginTx(ctx)
 				if err != nil {
 					return errors.Wrap(err, "failed to run migration '%s'", fileName)
 				}
-				if valid {
-					// A valid index doesn't need repairing: dropping it here
-					// would open a window, before the CONCURRENTLY rebuild
-					// below completes, where concurrent writes could violate
-					// the constraint it enforces (and could then make the
-					// rebuild itself fail). Only an invalid index left behind
-					// by an interrupted CONCURRENTLY build needs dropping.
-					continue
-				}
 			}
-			if _, err := conn.Exec(statement); err != nil {
+			if _, err := trx.Execute(statement); err != nil {
+				_ = trx.Rollback()
 				return errors.Wrap(err, "failed to run migration '%s'", fileName)
 			}
+		}
+
+		if err := commitBatch(trx); err != nil {
+			return errors.Wrap(err, "failed to run migration '%s'", fileName)
 		}
 
 		if _, err := conn.Exec("INSERT INTO migrations_history (version, filename) VALUES ($1, $2)", version, fileName); err != nil {
@@ -153,6 +193,10 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 }
 
 var concurrentIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
+
+// dropConcurrentIndexRegex matches DROP INDEX CONCURRENTLY statements, which
+// (like CREATE INDEX CONCURRENTLY) cannot run inside a transaction.
+var dropConcurrentIndexRegex = regexp.MustCompile(`(?i)^DROP\s+INDEX\s+CONCURRENTLY\b`)
 
 // identPattern matches one SQL identifier: either double-quoted (preserving
 // case and any character, "" is an escaped quote) or a bare identifier.

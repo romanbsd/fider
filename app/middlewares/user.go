@@ -56,6 +56,18 @@ func User() web.MiddlewareFunc {
 					return next(c)
 				}
 
+				// A widget/mobile JWT (Origin=api) is a bearer-only credential
+				// for the /widget/* and /api/v1/* API surface, never a session
+				// cookie. Without this check a token minted by /widget/signin
+				// (embedded on arbitrary customer sites) could be replayed as the
+				// auth cookie and open a full browser UI session for its user for
+				// the token's whole 365-day lifetime. UI sessions are always
+				// minted with Origin=ui.
+				if claims.Origin == jwt.FiderClaimsOriginAPI {
+					c.RemoveCookie(web.CookieAuthName)
+					return next(c)
+				}
+
 				user, err = findUserByClaims(c, &claims.FiderClaims)
 				if err != nil {
 					return err

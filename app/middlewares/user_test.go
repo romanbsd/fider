@@ -566,6 +566,49 @@ func TestUser_RevokedWidgetToken_CookieRejected(t *testing.T) {
 	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
 }
 
+func TestUser_APIOriginJWT_NotAcceptedAsCookie(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:        mock.JonSnow.ID,
+			UserName:      mock.JonSnow.Name,
+			Origin:        jwt.FiderClaimsOriginAPI,
+			SecurityStamp: mock.JonSnow.SecurityStamp,
+		},
+		WidgetTokenHash: "active-token-hash",
+	})
+	Expect(err).IsNil()
+
+	// The token is fully valid in every other respect (user resolves, security
+	// stamp matches, widget token is active) — only its Origin marks it as a
+	// bearer-only API credential. Without the Origin check this would open a
+	// full UI session for the user.
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
+		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
+		return nil
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, response := server.
+		OnTenant(mock.DemoTenant).
+		AddCookie(web.CookieAuthName, token).
+		Execute(func(c *web.Context) error {
+			if c.User() == nil {
+				return c.NoContent(http.StatusNoContent)
+			}
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusNoContent)
+	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
+}
+
 func TestUser_Impersonation_Collaborator(t *testing.T) {
 	RegisterT(t)
 

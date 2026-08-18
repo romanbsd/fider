@@ -18,6 +18,7 @@ func setupMigrationTest(t *testing.T) {
 	_, _ = trx.Execute("DROP TABLE IF EXISTS foo")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_dummy")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_repair_dummy")
+	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_atomic_dummy")
 	trx.MustCommit()
 }
 
@@ -165,4 +166,24 @@ func TestMigrate_ConcurrentIndex_SkipsValidIndexDrop(t *testing.T) {
 	err = trx.Scalar(&indisvalid, `SELECT indisvalid FROM pg_index WHERE indexrelid = 'conc_repair_dummy_idx'::regclass`)
 	Expect(err).IsNil()
 	Expect(indisvalid).IsTrue()
+}
+
+// TestMigrate_ConcurrentIndex_FailingBatch_RollsBackDDL verifies that the
+// ordinary (non-CONCURRENTLY) statements of a CONCURRENTLY migration run in a
+// single transaction: when one of them fails, everything before it in the
+// batch rolls back, instead of being left committed by the previous
+// statement-at-a-time execution path.
+func TestMigrate_ConcurrentIndex_FailingBatch_RollsBackDDL(t *testing.T) {
+	setupMigrationTest(t)
+	ctx := context.Background()
+
+	err := dbx.Migrate(ctx, "/app/pkg/dbx/testdata/migration_concurrent_failure")
+	Expect(err).IsNotNil()
+
+	// The CREATE TABLE and the failing ALTER ran in one transaction, so the
+	// whole batch rolled back: the table must not exist.
+	trx, _ := dbx.BeginTx(ctx)
+	defer trx.MustRollback()
+	_, err = trx.Execute("SELECT 1 FROM conc_atomic_dummy")
+	Expect(err).IsNotNil()
 }
