@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/handlers"
 	"github.com/getfider/fider/app/handlers/apiv1"
 	"github.com/getfider/fider/app/handlers/webhooks"
@@ -84,10 +85,10 @@ func routes(r *web.Engine) *web.Engine {
 			widget.Use(middlewares.WidgetCORS())
 			widget.Use(middlewares.WidgetRateLimit())
 			widget.Use(middlewares.WidgetAuth())
-			widget.Options("/widget/signin", apiv1.WidgetSignIn())
-			widget.Options("/widget/signout", apiv1.WidgetSignOut())
-			widget.Post("/widget/signin", apiv1.WidgetSignIn())
-			widget.Get("/widget/signout", apiv1.WidgetSignOut())
+			widget.Options(app.WidgetSignInPath, apiv1.WidgetSignIn())
+			widget.Options(app.WidgetSignOutPath, apiv1.WidgetSignOut())
+			widget.Post(app.WidgetSignInPath, apiv1.WidgetSignIn())
+			widget.Get(app.WidgetSignOutPath, apiv1.WidgetSignOut())
 		}
 	}
 

@@ -33,6 +33,13 @@ const (
 	GitHubProvider = "github"
 )
 
+// Widget API paths. Registered in routes.go and matched in middleware; a shared
+// constant keeps the two in sync.
+const (
+	WidgetSignInPath  = "/widget/signin"
+	WidgetSignOutPath = "/widget/signout"
+)
+
 var (
 	RequestCtxKey     = createKey("REQUEST")
 	TransactionCtxKey = createKey("TRANSACTION")

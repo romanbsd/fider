@@ -174,6 +174,15 @@ func registerDeviceUser(ctx context.Context, c *cmd.RegisterDeviceUser) error {
 			return app.ErrDeviceSecretMismatch
 		}
 
+		// A blocked device user must not be handed a fresh session at sign-in
+		// either — the same rule authenticateWidget enforces for widget-header
+		// requests. The JWT would be rejected on every later request anyway, but
+		// failing here keeps sign-in honest ("blocked users are unable to sign
+		// in") instead of returning a token that can never be used.
+		if existing.Status == enum.UserBlocked {
+			return app.ErrNotFound
+		}
+
 		c.Result = existing
 		return nil
 	})

@@ -55,6 +55,73 @@ SELECT 1;`
 	}
 }
 
+func TestSplitStatements_EStringBackslashEscapes(t *testing.T) {
+	script := `INSERT INTO t VALUES (E'it\'s; fine');
+SELECT 1;`
+
+	got := splitStatements(script)
+	want := []string{
+		`INSERT INTO t VALUES (E'it\'s; fine');`,
+		"SELECT 1;",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d statements, got %d: %q", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("statement %d mismatch:\n got: %q\nwant: %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSplitStatements_PlainLiteralBackslashIsNotEscape(t *testing.T) {
+	// In standard-conforming strings a backslash is not an escape, so '\'' ends
+	// the literal right after the backslash; the splitter must not treat the
+	// quote as escaped and skip the terminating semicolon.
+	script := "INSERT INTO t VALUES ('a\\'; 1);\nSELECT 2;"
+
+	got := splitStatements(script)
+	want := []string{
+		"INSERT INTO t VALUES ('a\\';",
+		"1);",
+		"SELECT 2;",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d statements, got %d: %q", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("statement %d mismatch:\n got: %q\nwant: %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSplitStatements_IdentifierEndingInEIsNotEString(t *testing.T) {
+	// A quote directly after a word ending in 'e' (here: 'case') is a plain
+	// literal, not an E-string: the 'e' belongs to the identifier. Without the
+	// guard the backslash-quote would be treated as an escape and the semicolon
+	// inside the literal would never split the statement.
+	script := "INSERT INTO t VALUES (case'a\\'; 1);\nSELECT 2;"
+
+	got := splitStatements(script)
+	want := []string{
+		"INSERT INTO t VALUES (case'a\\';",
+		"1);",
+		"SELECT 2;",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d statements, got %d: %q", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("statement %d mismatch:\n got: %q\nwant: %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSplitStatements_QuotedIdentifier(t *testing.T) {
 	script := `CREATE TABLE "weird;name" (a text);
 SELECT 1;`

@@ -236,6 +236,13 @@ func splitStatements(script string) []string {
 		switch script[i] {
 		case '\'', '"':
 			quote := script[i]
+			// E'...' strings (but not plain '...' literals) treat backslash as an
+			// escape character, so \' there does not terminate the literal. The
+			// E prefix is a standalone token: a preceding identifier character
+			// means the 'e' is part of a word (e.g. ...name='a'), not an E-string.
+			eString := quote == '\'' && i > 0 &&
+				(script[i-1] == 'e' || script[i-1] == 'E') &&
+				(i < 2 || !isIdentChar(script[i-2]))
 			for {
 				end := strings.IndexByte(script[i+1:], quote)
 				if end == -1 {
@@ -243,8 +250,13 @@ func splitStatements(script string) []string {
 					break
 				}
 				i += end + 1
+				if eString && script[i-1] == '\\' {
+					// escaped quote inside an E-string literal (E'it\'s')
+					i++
+					continue
+				}
 				if i+1 < len(script) && script[i+1] == quote {
-					// escaped quote inside the literal/identifier
+					// escaped quote inside the literal/identifier ('')
 					i++
 					continue
 				}
@@ -316,6 +328,14 @@ func blockCommentEnd(s string, start int) int {
 		}
 	}
 	return len(s)
+}
+
+// isIdentChar reports whether b can appear inside a PostgreSQL identifier.
+// Used to distinguish a standalone E-string prefix from an 'e' that is the last
+// letter of an identifier.
+func isIdentChar(b byte) bool {
+	return b == '_' || b == '$' ||
+		b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
 func dollarQuoteTag(script string, i int) (string, bool) {

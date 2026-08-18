@@ -3,8 +3,10 @@ package apiv1
 import (
 	"time"
 
+	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/handlers"
 	"github.com/getfider/fider/app/models/cmd"
+	"github.com/getfider/fider/app/models/dto"
 	"github.com/getfider/fider/app/models/entity"
 	"github.com/getfider/fider/app/models/query"
 	"github.com/getfider/fider/app/pkg/bus"
@@ -12,6 +14,7 @@ import (
 	"github.com/getfider/fider/app/pkg/errors"
 	"github.com/getfider/fider/app/pkg/idtoken"
 	"github.com/getfider/fider/app/pkg/jwt"
+	"github.com/getfider/fider/app/pkg/log"
 	"github.com/getfider/fider/app/pkg/validate"
 	"github.com/getfider/fider/app/pkg/web"
 	"github.com/getfider/fider/app/pkg/widgettoken"
@@ -63,6 +66,13 @@ func WidgetSignIn() web.HandlerFunc {
 			}
 			u, secret, err := signInByWidgetToken(c, input)
 			if err != nil {
+				// Expected auth failures (invalid/revoked widget token, wrong
+				// device secret) are intentionally indistinguishable to the caller
+				// — a bare 401 prevents probing — but anything else is an internal
+				// error and must not silently masquerade as an auth failure.
+				if cause := errors.Cause(err); cause != app.ErrNotFound && cause != app.ErrDeviceSecretMismatch {
+					log.Errorf(c, "widget sign-in failed: @{Error}", dto.Props{"Error": err.Error()})
+				}
 				return c.Unauthorized()
 			}
 			user = u

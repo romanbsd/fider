@@ -20,10 +20,16 @@ import (
 )
 
 var (
-	// widgetRateLimiter uses namespaced keys for the per-tenant ceiling and the
-	// sign-in client buckets. One limiter keeps lifecycle and configuration in
-	// one place while the namespaces keep those budgets independent.
+	// widgetRateLimiter caps the total widget traffic per tenant. It is separate
+	// from widgetSigninLimiter below so a single abusive client cannot exhaust
+	// the tenant's budget and starve every other widget client for the window.
 	widgetRateLimiter = ratelimit.New(env.Config.Widget.RateLimit, time.Minute)
+	// widgetSigninLimiter throttles /widget/signin per client IP. Its per-client
+	// ceiling is a fraction of the tenant ceiling: with two buckets at the same
+	// limit, one client burning its own budget would still exhaust the shared
+	// tenant bucket, so the per-client limit only adds isolation when it binds
+	// first.
+	widgetSigninLimiter = ratelimit.New(max(1, env.Config.Widget.RateLimit/4), time.Minute)
 )
 
 // WidgetRateLimit throttles widget requests per tenant. Unauthenticated requests
@@ -45,9 +51,9 @@ func WidgetRateLimit() web.MiddlewareFunc {
 			// middleware runs before WidgetAuth, so c.IsAuthenticated() is never
 			// true here yet); keep a per-client limit on top of the tenant ceiling
 			// so one client cannot starve it.
-			if c.Request.URL.Path == "/widget/signin" {
+			if c.Request.URL.Path == app.WidgetSignInPath {
 				clientKey := fmt.Sprintf("signin:%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr(), c.Request.GetHeader("X-Forwarded-For")))
-				if !widgetRateLimiter.Allow(clientKey) {
+				if !widgetSigninLimiter.Allow(clientKey) {
 					return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 				}
 			}
@@ -93,7 +99,7 @@ func WidgetAuth() web.MiddlewareFunc {
 		return func(c *web.Context) error {
 			// The sign-in endpoint validates the widget token itself so that the
 			// first request does not require an existing session.
-			if c.Request.URL.Path == "/widget/signin" {
+			if c.Request.URL.Path == app.WidgetSignInPath {
 				return next(c)
 			}
 
