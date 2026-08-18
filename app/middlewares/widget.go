@@ -104,11 +104,11 @@ func WidgetAuth() web.MiddlewareFunc {
 				return c.Unauthorized()
 			}
 
-			if bearer, err := web.BearerToken(c.Request.GetHeader("Authorization")); err != nil {
+			bearer, err := web.BearerToken(c.Request.GetHeader("Authorization"))
+			if err != nil {
 				return c.Unauthorized()
-			} else {
-				return authenticateMobile(c, bearer, next)
 			}
+			return authenticateMobile(c, bearer, next)
 		}
 	}
 }
