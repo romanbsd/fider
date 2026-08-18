@@ -585,8 +585,11 @@ func TestUser_APIOriginJWT_NotAcceptedAsCookie(t *testing.T) {
 	// bearer-only API credential. Without the Origin check this would open a
 	// full UI session for the user.
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
-		q.Result = mock.JonSnow
-		return nil
+		if q.UserID == mock.JonSnow.ID {
+			q.Result = mock.JonSnow
+			return nil
+		}
+		return app.ErrNotFound
 	})
 	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
 		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
@@ -606,6 +609,58 @@ func TestUser_APIOriginJWT_NotAcceptedAsCookie(t *testing.T) {
 		})
 
 	Expect(status).Equals(http.StatusNoContent)
+	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
+}
+
+func TestUser_APIOriginCookie_ValidBearer_StillAuthenticates(t *testing.T) {
+	RegisterT(t)
+
+	// The cookie carries an API-origin (widget) token that must never open a
+	// session by itself...
+	cookieToken, err := jwt.Encode(jwt.WidgetClaims{
+		FiderClaims: jwt.FiderClaims{
+			UserID:   999, // no such user: proves the cookie itself is ignored
+			UserName: "Widget",
+			Origin:   jwt.FiderClaimsOriginAPI,
+		},
+		WidgetTokenHash: "whatever",
+	})
+	Expect(err).IsNil()
+
+	// ...but the same request also presents a valid bearer JWT, which must
+	// still authenticate the caller.
+	bearerToken, err := jwt.Encode(jwt.FiderClaims{
+		UserID:        mock.JonSnow.ID,
+		UserName:      mock.JonSnow.Name,
+		UserEmail:     mock.JonSnow.Email,
+		Origin:        jwt.FiderClaimsOriginAPI,
+		SecurityStamp: mock.JonSnow.SecurityStamp,
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		if q.UserID == mock.JonSnow.ID {
+			q.Result = mock.JonSnow
+			return nil
+		}
+		return app.ErrNotFound
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, response := server.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1/posts").
+		AddCookie(web.CookieAuthName, cookieToken).
+		AddHeader("Authorization", "Bearer "+bearerToken).
+		Execute(func(c *web.Context) error {
+			return c.String(http.StatusOK, c.User().Name)
+		})
+
+	Expect(status).Equals(http.StatusOK)
+	Expect(response.Body.String()).Equals("Jon Snow")
+	// The discarded API-origin cookie is still removed even though the bearer
+	// token authenticated the request.
 	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
 }
 

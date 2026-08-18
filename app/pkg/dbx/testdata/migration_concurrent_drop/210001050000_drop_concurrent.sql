@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS conc_drop_dummy_idx;

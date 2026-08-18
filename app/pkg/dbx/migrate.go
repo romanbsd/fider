@@ -121,7 +121,7 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 		}
 
 		var trx *Trx
-		for _, statement := range statements {
+		for i, statement := range statements {
 			stripped := stripLeadingComments(statement)
 			if concurrentIndexRegex.MatchString(stripped) || dropConcurrentIndexRegex.MatchString(stripped) {
 				// Commit the batch of ordinary statements accumulated so far:
@@ -136,13 +136,15 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 					if err != nil {
 						return errors.Wrap(err, "failed to run migration '%s'", fileName)
 					}
-					if valid {
-						// A valid index doesn't need repairing: dropping it here
-						// would open a window, before the CONCURRENTLY rebuild
-						// below completes, where concurrent writes could violate
-						// the constraint it enforces (and could then make the
-						// rebuild itself fail). Only an invalid index left behind
-						// by an interrupted CONCURRENTLY build needs dropping.
+					if valid && rebuildsIndex(statements, i+1, name) {
+						// This drop is the repair half of a drop-then-rebuild
+						// sequence: the index is valid, so dropping it here would
+						// open a window, before the CONCURRENTLY rebuild below
+						// completes, where concurrent writes could violate the
+						// constraint it enforces (and could then make the rebuild
+						// itself fail). Only an invalid index left behind by an
+						// interrupted CONCURRENTLY build, or a standalone drop
+						// with nothing rebuilding the index, is executed here.
 						continue
 					}
 				}
@@ -204,6 +206,28 @@ const identPattern = `(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`
 
 var dropIndexRegex = regexp.MustCompile(`(?i)^DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?(` + identPattern + `(?:\.` + identPattern + `)?)\s*;?\s*$`)
 
+// createIndexRegex matches a CREATE INDEX statement and captures the index
+// name (schema-qualified and/or quoted, exactly as written), used to tell a
+// drop-then-rebuild repair sequence apart from a standalone DROP INDEX.
+var createIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(` + identPattern + `(?:\.` + identPattern + `)?)`)
+
+// rebuildsIndex reports whether statements[start:] contains a CREATE INDEX for
+// the given name, i.e. the migration drops then rebuilds it (the repair
+// recovery sequence). Used to decide whether a DROP INDEX of an already-valid
+// index is the repair half of that sequence (skip it, to avoid a window where
+// concurrent writes could violate the constraint) or a standalone drop that
+// the author intends to execute.
+func rebuildsIndex(statements []string, start int, name string) bool {
+	for _, s := range statements[start:] {
+		m := createIndexRegex.FindStringSubmatch(stripLeadingComments(s))
+		// group 1 is the optional "UNIQUE " token; group 2 is the index name
+		if m != nil && m[2] == name {
+			return true
+		}
+	}
+	return false
+}
+
 // stripLeadingComments removes any leading line/block comments from s (as
 // isConcurrentMigration does), so a keyword-anchored regex can match
 // statements that a migration author chose to document.
@@ -253,12 +277,13 @@ func indexIsValid(name string) (bool, error) {
 }
 
 // isConcurrentMigration reports whether any statement of the script is a
-// CREATE INDEX CONCURRENTLY, ignoring leading SQL comments. Detection runs on
-// the split statements so the word CONCURRENTLY inside comments or quoted
-// identifiers cannot trigger the non-transactional path.
+// CREATE or DROP INDEX CONCURRENTLY, ignoring leading SQL comments. Detection
+// runs on the split statements so the word CONCURRENTLY inside comments or
+// quoted identifiers cannot trigger the non-transactional path.
 func isConcurrentMigration(statements []string) bool {
 	for _, s := range statements {
-		if concurrentIndexRegex.MatchString(stripLeadingComments(s)) {
+		s = stripLeadingComments(s)
+		if concurrentIndexRegex.MatchString(s) || dropConcurrentIndexRegex.MatchString(s) {
 			return true
 		}
 	}

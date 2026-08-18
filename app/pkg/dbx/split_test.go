@@ -333,6 +333,26 @@ func TestIsConcurrentMigration(t *testing.T) {
 			statements: splitStatements("/* outer /* CONCURRENTLY nested */ still a comment */ CREATE INDEX foo ON bar (id);"),
 			want:       false,
 		},
+		{
+			name:       "concurrent drop index",
+			statements: splitStatements("DROP INDEX CONCURRENTLY foo;"),
+			want:       true,
+		},
+		{
+			name:       "concurrent drop with if exists",
+			statements: splitStatements("DROP INDEX CONCURRENTLY IF EXISTS foo;"),
+			want:       true,
+		},
+		{
+			name:       "comment before concurrent drop",
+			statements: splitStatements("-- remove an unused index\nDROP INDEX CONCURRENTLY IF EXISTS foo;"),
+			want:       true,
+		},
+		{
+			name:       "plain drop index is not concurrent",
+			statements: splitStatements("DROP INDEX IF EXISTS foo;"),
+			want:       false,
+		},
 	}
 
 	for _, tc := range cases {

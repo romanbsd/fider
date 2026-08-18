@@ -19,6 +19,7 @@ func setupMigrationTest(t *testing.T) {
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_dummy")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_repair_dummy")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_atomic_dummy")
+	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_drop_dummy")
 	trx.MustCommit()
 }
 
@@ -186,4 +187,35 @@ func TestMigrate_ConcurrentIndex_FailingBatch_RollsBackDDL(t *testing.T) {
 	defer trx.MustRollback()
 	_, err = trx.Execute("SELECT 1 FROM conc_atomic_dummy")
 	Expect(err).IsNotNil()
+}
+
+// TestMigrate_ConcurrentDrop_ExecutesStandaloneDrop verifies a migration whose
+// only CONCURRENTLY statement is a DROP INDEX: (a) it is routed through the
+// non-transactional path (a DROP INDEX CONCURRENTLY fails inside a
+// transaction), and (b) the drop actually executes — it is NOT skipped just
+// because the index is valid. The valid-index skip is reserved for the
+// drop-then-rebuild repair sequence (see
+// TestMigrate_ConcurrentIndex_SkipsValidIndexDrop).
+func TestMigrate_ConcurrentDrop_ExecutesStandaloneDrop(t *testing.T) {
+	setupMigrationTest(t)
+	ctx := context.Background()
+
+	trx, _ := dbx.BeginTx(ctx)
+	_, err := trx.Execute(`CREATE TABLE conc_drop_dummy (id BIGSERIAL PRIMARY KEY, tenant_id INT NOT NULL, device_hash TEXT)`)
+	Expect(err).IsNil()
+	_, err = trx.Execute(`CREATE UNIQUE INDEX conc_drop_dummy_idx ON conc_drop_dummy (tenant_id, device_hash)`)
+	Expect(err).IsNil()
+	trx.MustCommit()
+
+	err = dbx.Migrate(ctx, "/app/pkg/dbx/testdata/migration_concurrent_drop")
+	Expect(err).IsNil()
+
+	trx, _ = dbx.BeginTx(ctx)
+	defer trx.MustRollback()
+	var count int
+	err = trx.Scalar(&count, `
+		SELECT COUNT(*) FROM pg_indexes
+		WHERE tablename = 'conc_drop_dummy' AND indexname = 'conc_drop_dummy_idx'`)
+	Expect(err).IsNil()
+	Expect(count).Equals(0)
 }

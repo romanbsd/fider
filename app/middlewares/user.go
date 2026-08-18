@@ -64,47 +64,59 @@ func User() web.MiddlewareFunc {
 				// the token's whole 365-day lifetime. UI sessions are always
 				// minted with Origin=ui.
 				if claims.Origin == jwt.FiderClaimsOriginAPI {
+					// Remove the cookie, but do not stop here: the same request
+					// may also carry a valid Authorization header (e.g. a client
+					// with shared webview storage), which must still be able to
+					// authenticate through the bearer path below. The cookie
+					// token's own claims are never used to resolve a user.
 					c.RemoveCookie(web.CookieAuthName)
-					return next(c)
-				}
-
-				user, err = findUserByClaims(c, &claims.FiderClaims)
-				if err != nil {
-					return err
-				}
-				if user == nil {
-					c.RemoveCookie(web.CookieAuthName)
-					return next(c)
-				}
-
-				// Security stamp check: if the JWT contains a stamp (new tokens only),
-				// validate it against the current DB stamp. A mismatch means the user's
-				// security-relevant data has changed (e.g. role changed, account blocked,
-				// or OAuth allowed-roles updated) and they must re-authenticate so that
-				// access controls are re-evaluated.
-				if claims.SecurityStamp != "" && claims.SecurityStamp != user.SecurityStamp {
-					c.RemoveCookie(web.CookieAuthName)
-					if c.IsAjax() {
-						return c.JSON(401, web.Map{})
+					token = ""
+					fromSignUpCookie = false
+				} else {
+					user, err = findUserByClaims(c, &claims.FiderClaims)
+					if err != nil {
+						return err
 					}
-					redirectTarget := c.Request.URL.RequestURI()
-					if redirectTarget != "" &&
-						redirectTarget != "/" &&
-						!strings.HasPrefix(redirectTarget, "/signin") &&
-						!strings.HasPrefix(redirectTarget, "/signout") {
-						return c.Redirect("/signin?redirect=" + url.QueryEscape(redirectTarget))
+					if user == nil {
+						c.RemoveCookie(web.CookieAuthName)
+						return next(c)
 					}
-					return c.Redirect("/signin")
-				}
 
-				// A device-issued JWT is bound to the widget token it came from;
-				// re-check that the token is still active so revocation applies
-				// no matter which transport (cookie or bearer) the client uses.
-				if claims.WidgetTokenHash != "" && widgettoken.ValidateSession(c, claims) != nil {
-					c.RemoveCookie(web.CookieAuthName)
-					return next(c)
+					// Security stamp check: if the JWT contains a stamp (new tokens only),
+					// validate it against the current DB stamp. A mismatch means the user's
+					// security-relevant data has changed (e.g. role changed, account blocked,
+					// or OAuth allowed-roles updated) and they must re-authenticate so that
+					// access controls are re-evaluated.
+					if claims.SecurityStamp != "" && claims.SecurityStamp != user.SecurityStamp {
+						c.RemoveCookie(web.CookieAuthName)
+						if c.IsAjax() {
+							return c.JSON(401, web.Map{})
+						}
+						redirectTarget := c.Request.URL.RequestURI()
+						if redirectTarget != "" &&
+							redirectTarget != "/" &&
+							!strings.HasPrefix(redirectTarget, "/signin") &&
+							!strings.HasPrefix(redirectTarget, "/signout") {
+							return c.Redirect("/signin?redirect=" + url.QueryEscape(redirectTarget))
+						}
+						return c.Redirect("/signin")
+					}
+
+					// A device-issued JWT is bound to the widget token it came from;
+					// re-check that the token is still active so revocation applies
+					// no matter which transport (cookie or bearer) the client uses.
+					if claims.WidgetTokenHash != "" && widgettoken.ValidateSession(c, claims) != nil {
+						c.RemoveCookie(web.CookieAuthName)
+						return next(c)
+					}
 				}
-			} else if c.Request.IsAPI() {
+			}
+
+			// The bearer path runs when there is no usable session cookie —
+			// including after an API-origin cookie was just discarded above — so
+			// a request presenting both a stale widget cookie and a valid
+			// Authorization header still authenticates.
+			if token == "" && c.Request.IsAPI() {
 				if bearer, err := web.BearerToken(c.Request.GetHeader("Authorization")); err == nil {
 					resolved, handled, err := resolveBearerUser(c, bearer)
 					if handled {
