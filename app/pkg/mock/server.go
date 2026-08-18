@@ -102,6 +102,12 @@ func (s *Server) WithURL(fullURL string) *Server {
 	return s
 }
 
+// WithRemoteAddr sets the network address of the (simulated) remote peer
+func (s *Server) WithRemoteAddr(addr string) *Server {
+	s.context.Request.SetRemoteAddr(addr)
+	return s
+}
+
 // Execute given handler and return response
 func (s *Server) Execute(handler web.HandlerFunc) (int, *httptest.ResponseRecorder) {
 	next := handler

@@ -122,6 +122,50 @@ func TestSplitStatements_IdentifierEndingInEIsNotEString(t *testing.T) {
 	}
 }
 
+func TestSplitStatements_EStringBackslashRunParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		script string
+		want   []string
+	}{
+		{
+			// Two backslashes pair up, so the quote is NOT escaped and closes
+			// the literal; the following semicolon must split.
+			name:   "even run leaves quote as terminator",
+			script: "INSERT INTO t VALUES (E'a\\\\b'; SELECT 1);\nSELECT 2;",
+			want: []string{
+				"INSERT INTO t VALUES (E'a\\\\b';",
+				"SELECT 1);",
+				"SELECT 2;",
+			},
+		},
+		{
+			// Three backslashes: the third escapes the quote, so the literal
+			// continues past it and the semicolon after 'b' stays part of the
+			// string — only the semicolon after the real closing quote splits.
+			name:   "odd run escapes quote",
+			script: "INSERT INTO t VALUES (E'a\\\\\\'b; c'; SELECT 1);\nSELECT 2;",
+			want: []string{
+				"INSERT INTO t VALUES (E'a\\\\\\'b; c';",
+				"SELECT 1);",
+				"SELECT 2;",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		got := splitStatements(tc.script)
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s: expected %d statements, got %d: %q", tc.name, len(tc.want), len(got), got)
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: statement %d mismatch:\n got: %q\nwant: %q", tc.name, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
 func TestSplitStatements_QuotedIdentifier(t *testing.T) {
 	script := `CREATE TABLE "weird;name" (a text);
 SELECT 1;`

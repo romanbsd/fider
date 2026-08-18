@@ -324,6 +324,50 @@ func TestWidgetRateLimit_BlocksOverLimit(t *testing.T) {
 	Expect(blocked).IsTrue()
 }
 
+func TestWidgetRateLimit_BlockedClientDoesNotConsumeTenantCapacity(t *testing.T) {
+	RegisterT(t)
+
+	// A dedicated tenant id gives this test its own limiter buckets. The
+	// per-client sign-in ceiling is WIDGET_RATE_LIMIT/4 (30 with the default
+	// 120) and the tenant ceiling is WIDGET_RATE_LIMIT (120).
+	busyTenant := &entity.Tenant{ID: 20, Name: "Busy", Subdomain: "busy"}
+
+	// A fresh server per request is required (see TestWidgetRateLimit_BlocksOverLimit).
+	signIn := func(clientIP string) int {
+		server := mock.NewServer()
+		server.Use(middlewares.WidgetRateLimit())
+		status, _ := server.
+			OnTenant(busyTenant).
+			WithRemoteAddr(clientIP + ":1234").
+			WithURL("http://busy.test.fider.io/widget/signin").
+			Execute(func(c *web.Context) error {
+				return c.NoContent(http.StatusOK)
+			})
+		return status
+	}
+
+	// Client A exhausts its own per-client budget (30 allowed requests).
+	for i := 0; i < 30; i++ {
+		Expect(signIn("10.0.0.1")).Equals(http.StatusOK)
+	}
+
+	// Client A keeps hammering; every request is now rejected by the per-client
+	// limiter (which runs first) and must NOT consume tenant capacity.
+	blocked := 0
+	for i := 0; i < 100; i++ {
+		if signIn("10.0.0.1") == http.StatusTooManyRequests {
+			blocked++
+		}
+	}
+	Expect(blocked).Equals(100)
+
+	// Client B must still be served: tenant capacity was left intact by A's
+	// rejected requests. With the previous ordering (tenant check first) A's
+	// 100 rejected requests would have drained the shared tenant bucket and B
+	// would be blocked here.
+	Expect(signIn("10.0.0.2")).Equals(http.StatusOK)
+}
+
 func TestWidgetAuth_TracksLastUsed(t *testing.T) {
 	RegisterT(t)
 	registerWidgetBus()

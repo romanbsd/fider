@@ -43,19 +43,21 @@ func WidgetRateLimit() web.MiddlewareFunc {
 				return next(c)
 			}
 
-			if !widgetRateLimiter.Allow(fmt.Sprintf("tenant:%d", tenant.ID)) {
-				return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
-			}
-
 			// The sign-in endpoint is the only unauthenticated widget route (this
 			// middleware runs before WidgetAuth, so c.IsAuthenticated() is never
-			// true here yet); keep a per-client limit on top of the tenant ceiling
-			// so one client cannot starve it.
+			// true here yet). Its per-client check runs before the tenant-wide one
+			// so a client that has exhausted its own budget is rejected without
+			// consuming the shared tenant capacity that every other widget client
+			// depends on.
 			if c.Request.URL.Path == app.WidgetSignInPath {
 				clientKey := fmt.Sprintf("signin:%d:%s", tenant.ID, clientIP(c.Request.RemoteAddr(), c.Request.GetHeader("X-Forwarded-For")))
 				if !widgetSigninLimiter.Allow(clientKey) {
 					return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 				}
+			}
+
+			if !widgetRateLimiter.Allow(fmt.Sprintf("tenant:%d", tenant.ID)) {
+				return c.JSON(http.StatusTooManyRequests, web.Map{"error": "Too Many Requests"})
 			}
 
 			return next(c)

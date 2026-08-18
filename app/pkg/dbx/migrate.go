@@ -250,8 +250,11 @@ func splitStatements(script string) []string {
 					break
 				}
 				i += end + 1
-				if eString && script[i-1] == '\\' {
-					// escaped quote inside an E-string literal (E'it\'s')
+				if eString && escapedEStringQuote(script, i-1) {
+					// escaped quote inside an E-string literal (E'it\'s'); a quote
+					// is only escaped by an odd-length run of backslashes — an
+					// even run pairs them up and leaves the quote as the literal's
+					// terminator
 					i++
 					continue
 				}
@@ -336,6 +339,19 @@ func blockCommentEnd(s string, start int) int {
 func isIdentChar(b byte) bool {
 	return b == '_' || b == '$' ||
 		b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
+}
+
+// escapedEStringQuote reports whether the quote at index start-1 inside an
+// E-string is escaped by the run of backslashes directly before it. PostgreSQL
+// pairs consecutive backslashes up, so only an odd-length run escapes the
+// following quote; an even-length run leaves the quote as the literal's
+// terminator.
+func escapedEStringQuote(script string, start int) bool {
+	backslashes := 0
+	for j := start; j >= 0 && script[j] == '\\'; j-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func dollarQuoteTag(script string, i int) (string, bool) {
