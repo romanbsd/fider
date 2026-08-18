@@ -66,31 +66,6 @@ func TestUserStorage_GetByEmail_Error(t *testing.T) {
 	Expect(userByEmail.Result).IsNil()
 }
 
-func TestUserStorage_GetByEmail_IgnoresDeviceUser(t *testing.T) {
-	SetupDatabaseTest(t)
-	defer TeardownDatabaseTest()
-
-	register := &cmd.RegisterDeviceUser{DeviceHash: "device-leftover-email", Name: "Device"}
-	err := bus.Dispatch(demoTenantCtx, register)
-	Expect(err).IsNil()
-
-	// Leftover rows that still have an email (from before device emails were
-	// stopped being persisted) must not be treated as the identity for that
-	// address — otherwise OAuth/magic-link would merge into the device user.
-	_, err = trx.Execute("UPDATE users SET email = $1 WHERE id = $2", "leftover@got.com", register.Result.ID)
-	Expect(err).IsNil()
-
-	byEmail := &query.GetUserByEmail{Email: "leftover@got.com"}
-	err = bus.Dispatch(demoTenantCtx, byEmail)
-	Expect(errors.Cause(err)).Equals(app.ErrNotFound)
-	Expect(byEmail.Result).IsNil()
-
-	jon := &query.GetUserByEmail{Email: "jon.snow@got.com"}
-	err = bus.Dispatch(demoTenantCtx, jon)
-	Expect(err).IsNil()
-	Expect(jon.Result.ID).Equals(jonSnow.ID)
-}
-
 func TestUserStorage_GetByEmail(t *testing.T) {
 	SetupDatabaseTest(t)
 	defer TeardownDatabaseTest()

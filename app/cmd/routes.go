@@ -78,17 +78,17 @@ func routes(r *web.Engine) *web.Engine {
 		stripeWh.Post("/webhooks/stripe", webhooks.IncomingStripeWebhook())
 	}
 
-	// Feedback widget + mobile API (before CSRF middleware, cross-origin clients)
+	// Mobile / widget API (before CSRF middleware, cross-origin clients)
 	if env.Config.Widget.Enabled {
 		widget := r.Group()
 		{
 			widget.Use(middlewares.WidgetCORS())
 			widget.Use(middlewares.WidgetRateLimit())
 			widget.Use(middlewares.WidgetAuth())
-			widget.Options(app.WidgetSignInPath, apiv1.WidgetSignIn())
-			widget.Options(app.WidgetSignOutPath, apiv1.WidgetSignOut())
-			widget.Post(app.WidgetSignInPath, apiv1.WidgetSignIn())
-			widget.Get(app.WidgetSignOutPath, apiv1.WidgetSignOut())
+			widget.Options(app.MobileSignInPath, apiv1.MobileSignIn())
+			widget.Options(app.MobileSignOutPath, apiv1.MobileSignOut())
+			widget.Post(app.MobileSignInPath, apiv1.MobileSignIn())
+			widget.Get(app.MobileSignOutPath, apiv1.MobileSignOut())
 		}
 	}
 
@@ -275,10 +275,10 @@ func routes(r *web.Engine) *web.Engine {
 		membersApi.Use(middlewares.IsAuthenticated())
 		if env.Config.Widget.Enabled {
 			// Runs after IsAuthenticated so it can scope wildcard CORS to
-			// Visitor-role (widget device) sessions only; a real
-			// collaborator/admin session calling this same authenticated
-			// surface stays same-origin-only.
-			membersApi.Use(middlewares.VisitorWidgetCORS())
+			// mobile-API sessions (authenticated via an API-origin JWT from
+			// /widget/signin). A same-origin UI-cookie session calling this same
+			// authenticated surface stays same-origin-only.
+			membersApi.Use(middlewares.MobileApiCORS())
 		}
 		membersApi.Use(middlewares.BlockLockedTenants())
 
@@ -298,11 +298,11 @@ func routes(r *web.Engine) *web.Engine {
 		membersApi.Put("/api/v1/posts/:number/status", apiv1.SetResponse())
 	}
 
-	// CORS preflight for the widget/mobile-JWT-authenticated /api/v1/* member
-	// surface documented in docs/MOBILE_FEEDBACK_API.md (posts, comments,
-	// votes, subscriptions). Preflight OPTIONS requests carry no Authorization
-	// header, so these are registered on an unauthenticated group; WidgetCORS()
-	// answers them directly without reaching corsPreflight.
+	// CORS preflight for the mobile-JWT-authenticated /api/v1/* member surface
+	// documented in docs/MOBILE_FEEDBACK_API.md (posts, comments, votes,
+	// subscriptions). Preflight OPTIONS requests carry no Authorization header, so
+	// these are registered on an unauthenticated group; WidgetCORS() answers them
+	// directly without reaching corsPreflight.
 	if env.Config.Widget.Enabled {
 		apiCORS := r.Group()
 		{
@@ -318,6 +318,7 @@ func routes(r *web.Engine) *web.Engine {
 				"/api/v1/taggable-users",
 				"/api/v1/posts/:number/votes",
 				"/api/v1/posts/:number/votes/toggle",
+				"/api/v1/posts/:number/status",
 				"/api/v1/posts/:number/subscription",
 			} {
 				apiCORS.Options(path, corsPreflight())
@@ -371,9 +372,6 @@ func routes(r *web.Engine) *web.Engine {
 
 		adminApi.Use(middlewares.BlockLockedTenants())
 		adminApi.Delete("/api/v1/posts/:number", apiv1.DeletePost())
-		adminApi.Get("/api/v1/admin/widgets/tokens", apiv1.ListWidgetTokens())
-		adminApi.Post("/api/v1/admin/widgets/tokens", apiv1.CreateWidgetToken())
-		adminApi.Delete("/api/v1/admin/widgets/tokens/:id", apiv1.RevokeWidgetToken())
 	}
 
 	return r

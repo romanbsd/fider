@@ -25,25 +25,14 @@ func generateSecurityStamp() string {
 	return rand.String(64)
 }
 
-// insertUser inserts a new user row. When deviceHash is provided the insert is
-// scoped to (tenant_id, device_hash) via an ON CONFLICT DO NOTHING clause, in
-// which case a conflicting row yields ErrNotFound instead of an id, and
-// deviceSecretHash is stored alongside it (see entity.GenerateDeviceSecret).
-func insertUser(trx *dbx.Trx, tenant *entity.Tenant, name, email string, role enum.Role, deviceHash, deviceSecretHash string) (id int, securityStamp string, err error) {
+// insertUser inserts a new user row.
+func insertUser(trx *dbx.Trx, tenant *entity.Tenant, name, email string, role enum.Role) (id int, securityStamp string, err error) {
 	stamp := generateSecurityStamp()
 	now := time.Now()
-	if deviceHash == "" {
-		err = trx.Get(&id, `INSERT INTO users
-			(name, email, created_at, tenant_id, role, status, avatar_type, avatar_bkey, security_stamp)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8) RETURNING id`,
-			name, email, now, tenant.ID, role, enum.UserActive, enum.AvatarTypeGravatar, stamp)
-	} else {
-		err = trx.Get(&id, `INSERT INTO users
-			(name, email, created_at, tenant_id, role, status, avatar_type, avatar_bkey, security_stamp, device_hash, device_secret_hash)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8, $9, $10)
-			ON CONFLICT (tenant_id, device_hash) DO NOTHING RETURNING id`,
-			name, email, now, tenant.ID, role, enum.UserActive, enum.AvatarTypeGravatar, stamp, deviceHash, deviceSecretHash)
-	}
+	err = trx.Get(&id, `INSERT INTO users
+		(name, email, created_at, tenant_id, role, status, avatar_type, avatar_bkey, security_stamp)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8) RETURNING id`,
+		name, email, now, tenant.ID, role, enum.UserActive, enum.AvatarTypeGravatar, stamp)
 
 	if err != nil {
 		if pqErr, ok := errors.Cause(err).(*pq.Error); ok && pqErr.Constraint == "user_email_unique_idx" {
@@ -274,7 +263,7 @@ func registerUser(ctx context.Context, c *cmd.RegisterUser) error {
 		c.User.Status = enum.UserActive
 		c.User.Email = strings.ToLower(strings.TrimSpace(c.User.Email))
 
-		id, stamp, err := insertUser(trx, tenant, c.User.Name, c.User.Email, c.User.Role, "", "")
+		id, stamp, err := insertUser(trx, tenant, c.User.Name, c.User.Email, c.User.Role)
 		if err != nil {
 			return errors.Wrap(err, "failed to register new user")
 		}
@@ -331,7 +320,7 @@ func getUserByID(ctx context.Context, q *query.GetUserByID) error {
 func getUserByEmail(ctx context.Context, q *query.GetUserByEmail) error {
 	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, user *entity.User) error {
 		email := strings.ToLower(q.Email)
-		u, err := queryUser(ctx, trx, "email = $1 AND tenant_id = $2 AND device_hash IS NULL", email, tenant.ID)
+		u, err := queryUser(ctx, trx, "email = $1 AND tenant_id = $2", email, tenant.ID)
 		if err != nil {
 			return errors.Wrap(err, "failed to get user with email '%s'", email)
 		}
@@ -408,7 +397,7 @@ func getAllUsersNames(ctx context.Context, q *query.GetAllUsersNames) error {
 
 func queryUser(ctx context.Context, trx *dbx.Trx, filter string, args ...any) (*entity.User, error) {
 	user := dbEntities.User{}
-	sql := fmt.Sprintf("SELECT id, name, email, tenant_id, role, status, avatar_type, avatar_bkey, is_trusted, security_stamp, device_secret_hash FROM users WHERE status != %d AND ", enum.UserDeleted)
+	sql := fmt.Sprintf("SELECT id, name, email, tenant_id, role, status, avatar_type, avatar_bkey, is_trusted, security_stamp FROM users WHERE status != %d AND ", enum.UserDeleted)
 	err := trx.Get(&user, sql+filter, args...)
 	if err != nil {
 		return nil, err

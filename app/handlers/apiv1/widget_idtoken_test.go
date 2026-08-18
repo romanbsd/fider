@@ -8,7 +8,6 @@ import (
 
 	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/models/cmd"
-	"github.com/getfider/fider/app/models/entity"
 	"github.com/getfider/fider/app/models/query"
 	. "github.com/getfider/fider/app/pkg/assert"
 	"github.com/getfider/fider/app/pkg/bus"
@@ -26,7 +25,7 @@ func stubIDTokenClaims(claims *idtoken.Claims) func() {
 	return func() { verifyIDToken = prev }
 }
 
-func TestWidgetSignIn_IDToken_ExistingUserRequiresWidgetToken(t *testing.T) {
+func TestMobileSignIn_IDToken_SignsInExistingUser(t *testing.T) {
 	RegisterT(t)
 	defer stubIDTokenClaims(&idtoken.Claims{
 		UserID:        "google-sub-1",
@@ -34,7 +33,6 @@ func TestWidgetSignIn_IDToken_ExistingUserRequiresWidgetToken(t *testing.T) {
 		EmailVerified: true,
 		Name:          mock.JonSnow.Name,
 	})()
-
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByProvider) error {
 		return app.ErrNotFound
 	})
@@ -42,52 +40,43 @@ func TestWidgetSignIn_IDToken_ExistingUserRequiresWidgetToken(t *testing.T) {
 		q.Result = mock.JonSnow
 		return nil
 	})
-	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
-		q.Result = []*entity.WidgetToken{}
-		return nil
-	})
 	bus.AddHandler(func(ctx context.Context, c *cmd.RegisterUserProvider) error {
 		return nil
 	})
 
-	status, body := mock.NewServer().
+	status, _ := mock.NewServer().
 		OnTenant(mock.DemoTenant).
-		ExecutePostAsJSON(WidgetSignIn(), `{ "id_token": "valid-id-token" }`)
-
-	Expect(status).Equals(http.StatusBadRequest)
-	Expect(body.String("errors[0].message")).ContainsSubstring("Mobile sign-in is not enabled for this site")
-}
-
-func TestWidgetSignIn_IDToken_JWTExpiresInOneDay(t *testing.T) {
-	RegisterT(t)
-	defer stubIDTokenClaims(&idtoken.Claims{
-		UserID:        "google-sub-1",
-		Email:         mock.JonSnow.Email,
-		EmailVerified: true,
-		Name:          mock.JonSnow.Name,
-	})()
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByProvider) error {
-		return app.ErrNotFound
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByEmail) error {
-		q.Result = mock.JonSnow
-		return nil
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
-		q.Result = []*entity.WidgetToken{{ID: 1}}
-		return nil
-	})
-	bus.AddHandler(func(ctx context.Context, c *cmd.RegisterUserProvider) error {
-		return nil
-	})
-
-	status, body := mock.NewServer().
-		OnTenant(mock.DemoTenant).
-		ExecutePostAsJSON(WidgetSignIn(), `{ "id_token": "valid-id-token" }`)
+		ExecutePostAsJSON(MobileSignIn(), `{ "id_token": "valid-id-token" }`)
 
 	Expect(status).Equals(http.StatusOK)
-	claims, err := jwt.DecodeWidgetClaims(body.String("token"))
+}
+
+func TestMobileSignIn_IDToken_JWTExpiresInOneDay(t *testing.T) {
+	RegisterT(t)
+	defer stubIDTokenClaims(&idtoken.Claims{
+		UserID:        "google-sub-1",
+		Email:         mock.JonSnow.Email,
+		EmailVerified: true,
+		Name:          mock.JonSnow.Name,
+	})()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByProvider) error {
+		return app.ErrNotFound
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByEmail) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, c *cmd.RegisterUserProvider) error {
+		return nil
+	})
+
+	status, body := mock.NewServer().
+		OnTenant(mock.DemoTenant).
+		ExecutePostAsJSON(MobileSignIn(), `{ "id_token": "valid-id-token" }`)
+
+	Expect(status).Equals(http.StatusOK)
+	claims, err := jwt.DecodeFiderClaims(body.String("token"))
 	Expect(err).IsNil()
 	Expect(claims.ExpiresAt.Time.Before(time.Now().Add(idTokenJWTDuration + time.Minute))).IsTrue()
 	Expect(claims.ExpiresAt.Time.After(time.Now().Add(idTokenJWTDuration - time.Hour))).IsTrue()

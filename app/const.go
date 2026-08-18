@@ -14,10 +14,6 @@ var ErrUserIDRequired = errors.New("UserID is required during OAuth integration"
 // ErrEmailTaken is returned when an insert violates the per-tenant email uniqueness constraint
 var ErrEmailTaken = errors.New("email address is already in use")
 
-// ErrDeviceSecretMismatch is returned when a widget device sign-in for an
-// already-registered device presents a missing or incorrect device secret
-var ErrDeviceSecretMismatch = errors.New("device secret is missing or incorrect")
-
 type key string
 
 func createKey(name string) key {
@@ -33,15 +29,16 @@ const (
 	GitHubProvider = "github"
 )
 
-// Widget API paths. Registered in routes.go and matched in middleware; a shared
+// Mobile API paths. Registered in routes.go and matched in middleware; a shared
 // constant keeps the two in sync.
 const (
-	WidgetSignInPath  = "/widget/signin"
-	WidgetSignOutPath = "/widget/signout"
+	MobileSignInPath  = "/widget/signin"
+	MobileSignOutPath = "/widget/signout"
 )
 
 var (
 	RequestCtxKey     = createKey("REQUEST")
+	MobileApiCtxKey   = createKey("MOBILE_API")
 	TransactionCtxKey = createKey("TRANSACTION")
 	TenantCtxKey      = createKey("TENANT")
 	LocaleCtxKey      = createKey("LOCALE")

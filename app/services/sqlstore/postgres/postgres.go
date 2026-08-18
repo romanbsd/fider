@@ -166,13 +166,6 @@ func (s Service) Init() {
 	bus.AddHandler(getModerationItems)
 	bus.AddHandler(getModerationCount)
 	bus.AddHandler(trustUser)
-	bus.AddHandler(createWidgetToken)
-	bus.AddHandler(revokeWidgetToken)
-	bus.AddHandler(updateWidgetTokenLastUsed)
-	bus.AddHandler(listWidgetTokens)
-	bus.AddHandler(getWidgetTokenByHash)
-	bus.AddHandler(getUserByDeviceHash)
-	bus.AddHandler(registerDeviceUser)
 }
 
 type SqlHandler func(trx *dbx.Trx, tenant *entity.Tenant, user *entity.User) error
