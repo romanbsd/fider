@@ -149,9 +149,17 @@ type config struct {
 		Enabled   bool `env:"WIDGET_ENABLED,default=true"`
 		RateLimit int  `env:"WIDGET_RATE_LIMIT,default=120,strict"`
 		IdToken   struct {
-			JWKSURL  string `env:"WIDGET_IDTOKEN_JWKS_URL"`
-			Issuer   string `env:"WIDGET_IDTOKEN_ISSUER"`
-			ClientID string `env:"WIDGET_IDTOKEN_CLIENT_ID"`
+			Google struct {
+				JWKSURL  string `env:"WIDGET_IDTOKEN_GOOGLE_JWKS_URL"`
+				Issuer   string `env:"WIDGET_IDTOKEN_GOOGLE_ISSUER"`
+				ClientID string `env:"WIDGET_IDTOKEN_GOOGLE_CLIENT_ID"`
+			}
+			Apple struct {
+				JWKSURL    string `env:"WIDGET_IDTOKEN_APPLE_JWKS_URL"`
+				Issuer     string `env:"WIDGET_IDTOKEN_APPLE_ISSUER"`
+				AppID      string `env:"WIDGET_IDTOKEN_APPLE_APP_ID"`
+				ServicesID string `env:"WIDGET_IDTOKEN_APPLE_SERVICES_ID"`
+			}
 		}
 	}
 	Webhook struct {

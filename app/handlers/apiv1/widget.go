@@ -13,11 +13,49 @@ import (
 	"github.com/getfider/fider/app/pkg/web"
 )
 
-var idTokenValidator = idtoken.New(idtoken.Config{
-	JWKSURL:  env.Config.Widget.IdToken.JWKSURL,
-	Issuer:   env.Config.Widget.IdToken.Issuer,
-	ClientID: env.Config.Widget.IdToken.ClientID,
-})
+// idTokenSource pairs an id_token validator with the provider identity it
+// verifies tokens for. The provider name is stored with the user (user_providers)
+// so Google and Apple identities stay separate and match the regular OAuth
+// identities of the same providers. A provider may contribute more than one
+// source: Apple signs in with different aud claims for the native app (App ID)
+// and the web (Services ID), so each gets its own validator.
+type idTokenSource struct {
+	provider  string
+	validator *idtoken.Validator
+}
+
+// idTokenSources lists every fully configured identity provider. It is built
+// once at init: validators allocate an HTTP client and key cache each, so
+// rebuilding on every sign-in would waste a client plus map per request.
+var idTokenSources = func() []idTokenSource {
+	providers := []struct {
+		name string
+		cfg  idtoken.Config
+	}{
+		{"google", idtoken.Config{
+			JWKSURL:  env.Config.Widget.IdToken.Google.JWKSURL,
+			Issuer:   env.Config.Widget.IdToken.Google.Issuer,
+			ClientID: env.Config.Widget.IdToken.Google.ClientID,
+		}},
+		{"apple", idtoken.Config{
+			JWKSURL:  env.Config.Widget.IdToken.Apple.JWKSURL,
+			Issuer:   env.Config.Widget.IdToken.Apple.Issuer,
+			ClientID: env.Config.Widget.IdToken.Apple.AppID,
+		}},
+		{"apple", idtoken.Config{
+			JWKSURL:  env.Config.Widget.IdToken.Apple.JWKSURL,
+			Issuer:   env.Config.Widget.IdToken.Apple.Issuer,
+			ClientID: env.Config.Widget.IdToken.Apple.ServicesID,
+		}},
+	}
+	var sources []idTokenSource
+	for _, p := range providers {
+		if v := idtoken.New(p.cfg); v.IsConfigured() {
+			sources = append(sources, idTokenSource{provider: p.name, validator: v})
+		}
+	}
+	return sources
+}()
 
 const (
 	// idTokenJWTDuration is the lifetime of a mobile JWT issued from an
@@ -25,20 +63,26 @@ const (
 	idTokenJWTDuration = 24 * time.Hour
 )
 
-// verifyIDToken is the identity-provider check used by sign-in. Tests stub it
-// so they can exercise the sign-in flow without standing up a JWKS endpoint.
-var verifyIDToken = func(c *web.Context, rawIDToken string) (*idtoken.Claims, error) {
-	if !idTokenValidator.IsConfigured() {
-		return nil, errors.New("Identity provider sign in is not enabled")
+// verifyIDToken is the identity-provider check used by sign-in: each configured
+// provider is tried until one verifies the token (the token's iss/aud match at
+// most one). It returns the claims and the name of the provider that accepted
+// the token. Tests stub it so they can exercise the sign-in flow without
+// standing up a JWKS endpoint.
+var verifyIDToken = func(c *web.Context, rawIDToken string) (*idtoken.Claims, string, error) {
+	if len(idTokenSources) == 0 {
+		return nil, "", errors.New("Identity provider sign in is not enabled")
 	}
-	claims, err := idTokenValidator.Verify(c, rawIDToken)
-	if err != nil {
-		return nil, errors.New("Invalid id_token")
+	for _, src := range idTokenSources {
+		claims, err := src.validator.Verify(c, rawIDToken)
+		if err != nil {
+			continue
+		}
+		if !claims.EmailVerified {
+			return nil, "", errors.New("id_token email is not verified")
+		}
+		return claims, src.provider, nil
 	}
-	if !claims.EmailVerified {
-		return nil, errors.New("id_token email is not verified")
-	}
-	return claims, nil
+	return nil, "", errors.New("Invalid id_token")
 }
 
 type widgetSignInInput struct {
@@ -98,12 +142,10 @@ func MobileSignOut() web.HandlerFunc {
 }
 
 func signInByIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {
-	claims, err := verifyIDToken(c, rawIDToken)
+	claims, provider, err := verifyIDToken(c, rawIDToken)
 	if err != nil {
 		return nil, err
 	}
-
-	const provider = "idtoken"
 
 	existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UserID, claims.Email)
 	if err != nil {

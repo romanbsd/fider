@@ -34,13 +34,20 @@ exchange for an id_token.
 | --- | --- | --- |
 | `WIDGET_ENABLED` | `true` | Mounts the `/widget/*` route group and the mobile API CORS layers |
 | `WIDGET_RATE_LIMIT` | `120` | Max requests per tenant per minute |
-| `WIDGET_IDTOKEN_JWKS_URL` | — | JWKS endpoint for id_token verification |
-| `WIDGET_IDTOKEN_ISSUER` | — | Expected `iss` claim |
-| `WIDGET_IDTOKEN_CLIENT_ID` | — | Expected `aud` claim |
+| `WIDGET_IDTOKEN_GOOGLE_JWKS_URL` | — | Google JWKS endpoint for id_token verification |
+| `WIDGET_IDTOKEN_GOOGLE_ISSUER` | — | Expected Google `iss` claim (`https://accounts.google.com`) |
+| `WIDGET_IDTOKEN_GOOGLE_CLIENT_ID` | — | Expected Google `aud` claim (OAuth client ID) |
+| `WIDGET_IDTOKEN_APPLE_JWKS_URL` | — | Apple JWKS endpoint (`https://appleid.apple.com/auth/keys`) |
+| `WIDGET_IDTOKEN_APPLE_ISSUER` | — | Expected Apple `iss` claim (`https://appleid.apple.com`) |
+| `WIDGET_IDTOKEN_APPLE_APP_ID` | — | Expected Apple `aud` claim for the native app (App ID) |
+| `WIDGET_IDTOKEN_APPLE_SERVICES_ID` | — | Expected Apple `aud` claim for the web client (Services ID) |
 
-Setting the three `WIDGET_IDTOKEN_*` variables enables mobile sign-in for every
-tenant of the instance; they are the single global switch (per-tenant OIDC
-configuration is intentionally out of scope).
+Configure at least one provider block (Google and/or Apple) to enable mobile
+sign-in; they apply instance-wide for every tenant. On each sign-in the server
+tries the configured providers until one verifies the presented id_token (the
+token's `iss`/`aud` match at most one) and stores the matched provider's identity
+(`google` or `apple`) on the user, so the same Google/Apple subject links to the
+same account that uses the regular OAuth flow.
 
 ### 2.2 Middleware chain (route group)
 
@@ -143,10 +150,13 @@ only — the client must discard its stored JWT.
 
 ### 4.1 Native mobile app / Flutter Web (id_token)
 
-1. Configure `WIDGET_IDTOKEN_JWKS_URL`, `WIDGET_IDTOKEN_ISSUER`,
-   `WIDGET_IDTOKEN_CLIENT_ID` on the server and add the app as an OIDC client.
-   The OIDC client used to obtain the id_token must resolve to the configured
-   `WIDGET_IDTOKEN_CLIENT_ID` (the `aud` claim).
+1. Configure at least one provider block on the server (`WIDGET_IDTOKEN_GOOGLE_*`
+   and/or `WIDGET_IDTOKEN_APPLE_*`) and register the app with the matching
+   provider: a Google OAuth client ID, or an Apple audience — the native App ID
+   (`WIDGET_IDTOKEN_APPLE_APP_ID`) and/or web Services ID
+   (`WIDGET_IDTOKEN_APPLE_SERVICES_ID`). The client the app uses to obtain an
+   id_token must resolve to one of the configured client IDs of that provider
+   (the `aud` claim).
 2. On launch (or when the stored JWT is expired/invalid), obtain an id_token
    from the OS/browser sign-in flow (Google/Apple Sign-In).
 3. Sign in:
@@ -209,7 +219,8 @@ request bodies — log only sanitized status/error details.
 
 ## 5. Client implementation checklist
 
-- [ ] OIDC client configured on the server (`WIDGET_IDTOKEN_*`) and in the app.
+- [ ] At least one provider block configured on the server (`WIDGET_IDTOKEN_GOOGLE_*`
+      and/or `WIDGET_IDTOKEN_APPLE_*`) and in the app.
 - [ ] `POST /widget/signin` implemented with `{ "id_token": ... }`.
 - [ ] JWT stored; attached as `Authorization: Bearer` on API requests.
 - [ ] 401 → re-sign-in; 429 → exponential backoff; 400 → reacquire `id_token`

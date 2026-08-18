@@ -17,10 +17,10 @@ import (
 	"github.com/getfider/fider/app/pkg/web"
 )
 
-func stubIDTokenClaims(claims *idtoken.Claims) func() {
+func stubIDTokenClaims(claims *idtoken.Claims, provider string) func() {
 	prev := verifyIDToken
-	verifyIDToken = func(_ *web.Context, _ string) (*idtoken.Claims, error) {
-		return claims, nil
+	verifyIDToken = func(_ *web.Context, _ string) (*idtoken.Claims, string, error) {
+		return claims, provider, nil
 	}
 	return func() { verifyIDToken = prev }
 }
@@ -32,7 +32,7 @@ func TestMobileSignIn_IDToken_SignsInExistingUser(t *testing.T) {
 		Email:         mock.JonSnow.Email,
 		EmailVerified: true,
 		Name:          mock.JonSnow.Name,
-	})()
+	}, "google")()
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByProvider) error {
 		return app.ErrNotFound
 	})
@@ -41,6 +41,34 @@ func TestMobileSignIn_IDToken_SignsInExistingUser(t *testing.T) {
 		return nil
 	})
 	bus.AddHandler(func(ctx context.Context, c *cmd.RegisterUserProvider) error {
+		Expect(c.ProviderName).Equals("google")
+		return nil
+	})
+
+	status, _ := mock.NewServer().
+		OnTenant(mock.DemoTenant).
+		ExecutePostAsJSON(MobileSignIn(), `{ "id_token": "valid-id-token" }`)
+
+	Expect(status).Equals(http.StatusOK)
+}
+
+func TestMobileSignIn_IDToken_AppleProviderName(t *testing.T) {
+	RegisterT(t)
+	defer stubIDTokenClaims(&idtoken.Claims{
+		UserID:        "apple-sub-1",
+		Email:         mock.JonSnow.Email,
+		EmailVerified: true,
+		Name:          mock.JonSnow.Name,
+	}, "apple")()
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByProvider) error {
+		return app.ErrNotFound
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByEmail) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, c *cmd.RegisterUserProvider) error {
+		Expect(c.ProviderName).Equals("apple")
 		return nil
 	})
 
@@ -58,7 +86,7 @@ func TestMobileSignIn_IDToken_JWTExpiresInOneDay(t *testing.T) {
 		Email:         mock.JonSnow.Email,
 		EmailVerified: true,
 		Name:          mock.JonSnow.Name,
-	})()
+	}, "google")()
 
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByProvider) error {
 		return app.ErrNotFound
