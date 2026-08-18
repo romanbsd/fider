@@ -26,11 +26,32 @@ var idTokenValidator = idtoken.New(idtoken.Config{
 	ClientID: env.Config.Widget.IdToken.ClientID,
 })
 
+const (
+	widgetDeviceJWTDuration = 365 * 24 * time.Hour
+	idTokenJWTDuration      = 24 * time.Hour
+)
+
+// verifyIDToken is the identity-provider check used by sign-in. Tests stub it
+// so they can exercise tenant opt-in without standing up a JWKS endpoint.
+var verifyIDToken = func(c *web.Context, rawIDToken string) (*idtoken.Claims, error) {
+	if !idTokenValidator.IsConfigured() {
+		return nil, errors.New("Identity provider sign in is not enabled")
+	}
+	claims, err := idTokenValidator.Verify(c, rawIDToken)
+	if err != nil {
+		return nil, errors.New("Invalid id_token")
+	}
+	if !claims.EmailVerified {
+		return nil, errors.New("id_token email is not verified")
+	}
+	return claims, nil
+}
+
 type widgetSignInInput struct {
 	Token   string `json:"token"`
 	UDID    string `json:"udid"`
 	Name    string `json:"name"`
-	Email   string `json:"email"`
+	Email   string `json:"email"` // accepted but never persisted for device users
 	IDToken string `json:"id_token"`
 	// DeviceSecret is required to re-authenticate an already-registered
 	// device (returned as device_secret in the response to that device's
@@ -80,6 +101,10 @@ func WidgetSignIn() web.HandlerFunc {
 			newDeviceSecret = secret
 		}
 
+		ttl := widgetDeviceJWTDuration
+		if widgetHash == "" {
+			ttl = idTokenJWTDuration
+		}
 		token, err := jwt.Encode(jwt.WidgetClaims{
 			FiderClaims: jwt.FiderClaims{
 				UserID:        user.ID,
@@ -88,7 +113,7 @@ func WidgetSignIn() web.HandlerFunc {
 				Origin:        jwt.FiderClaimsOriginAPI,
 				SecurityStamp: user.SecurityStamp,
 				Metadata: jwt.Metadata{
-					ExpiresAt: jwt.Time(time.Now().Add(365 * 24 * time.Hour)),
+					ExpiresAt: jwt.Time(time.Now().Add(ttl)),
 				},
 			},
 			WidgetTokenHash: widgetHash,
@@ -137,42 +162,31 @@ func signInByWidgetToken(c *web.Context, input *widgetSignInInput) (*entity.User
 }
 
 func signInByIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {
-	if !idTokenValidator.IsConfigured() {
-		return nil, errors.New("Identity provider sign in is not enabled")
-	}
-
-	claims, err := idTokenValidator.Verify(c, rawIDToken)
-	if err != nil {
-		return nil, errors.New("Invalid id_token")
-	}
-	if !claims.EmailVerified {
-		return nil, errors.New("id_token email is not verified")
-	}
-
-	const provider = "idtoken"
-
-	existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UserID, claims.Email)
+	claims, err := verifyIDToken(c, rawIDToken)
 	if err != nil {
 		return nil, err
 	}
 
+	const provider = "idtoken"
+
 	// idTokenValidator is configured once for the whole instance (env vars),
-	// not per tenant like custom OAuth apps are. Without a further check, any
-	// verified id_token from that single issuer/client could self-register on
-	// every public tenant sharing the instance. Requiring the tenant to have
-	// created at least one widget token — an admin-only, explicit action —
-	// scopes self-registration to tenants that opted into the mobile/widget
-	// feature themselves. This still shares one global issuer across every
-	// opted-in tenant; per-tenant id_token configuration (like custom OAuth
-	// apps) would close that gap but is out of scope here.
-	if existing == nil {
-		hasToken, err := tenantHasActiveWidgetToken(c)
-		if err != nil {
-			return nil, err
-		}
-		if !hasToken {
-			return nil, errors.New("Mobile sign-in is not enabled for this site")
-		}
+	// not per tenant like custom OAuth apps are. Requiring an active widget
+	// token — an admin-only, explicit action — scopes both sign-in of existing
+	// users and self-registration to tenants that opted into the mobile/widget
+	// feature. This still shares one global issuer across every opted-in
+	// tenant; per-tenant id_token configuration would close that gap but is
+	// out of scope here.
+	hasToken, err := tenantHasActiveWidgetToken(c)
+	if err != nil {
+		return nil, err
+	}
+	if !hasToken {
+		return nil, errors.New("Mobile sign-in is not enabled for this site")
+	}
+
+	existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UserID, claims.Email)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := handlers.RequireProviderAdmission(c.Tenant(), existing, false); err != nil {

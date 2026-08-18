@@ -23,7 +23,8 @@ a browser, cookies or a password**. Three mechanisms:
    (Google, Apple, etc.) issued to the tenant's client; Fider verifies it against the
    configured JWKS/issuer and signs the matching user in.
 3. **Signed-in JWT** — after sign-in the client holds a Fider JWT
-   (`Authorization: Bearer <jwt>`) valid for 365 days.
+   (`Authorization: Bearer <jwt>`): **365 days** for a device sign-in, **24 hours**
+   for an id_token sign-in.
 
 ## 2. Backend implementation
 
@@ -52,7 +53,8 @@ CREATE UNIQUE INDEX users_tenant_device_hash_idx ON users (tenant_id, device_has
   once at creation time and can never be retrieved afterwards.
 - **Device users** are ordinary `users` rows with `device_hash` set and role
   `Visitor`. `(tenant_id, device_hash)` is unique, so a re-sign-in from the same
-  device resolves to the same user.
+  device resolves to the same user. A client-supplied `email` is **not** stored
+  (it is unverified and would otherwise collide with OAuth/magic-link identity).
 - **Device secrets are stored hashed** the same way as widget tokens. The raw
   value is returned once, in the response to a device's first sign-in, and is
   required to re-authenticate that device afterwards — see
@@ -153,7 +155,7 @@ Success `200`:
 
 ```json
 {
-  "token": "<fider-jwt-365d>",
+  "token": "<fider-jwt>",
   "device_secret": "<raw-secret>", // only present on a device's first sign-in
   "user": {
     "id": 42,
@@ -164,6 +166,9 @@ Success `200`:
   }
 }
 ```
+
+`token` lifetime depends on the path: **365 days** for a device sign-in, **24 hours**
+for an id_token sign-in (see [4.4 Security notes](#44-security-notes)).
 
 `device_secret` is never recoverable after this response — the client must store
 it (alongside `udid`) and send it as `device_secret` on every later sign-in for
@@ -209,9 +214,10 @@ Raw tokens are never returned by list — only `id`, `label`, `createdAt`,
 `lastUsedAt`, `revokedAt`.
 
 `DELETE /api/v1/admin/widgets/tokens/:id` → `200 {}`. Revoked tokens fail all
-subsequent sign-in and stateless header auth (`X-Widget-Token`). Note that
-revoking a token does **not** invalidate JWTs that were already issued from it —
-see [4.4 Security notes](#44-security-notes). `403` if the id does not belong to
+subsequent sign-in and stateless header auth (`X-Widget-Token`). Revoking a
+token immediately invalidates device JWTs issued from it; revoking the tenant's
+**last** active token also invalidates id_token JWTs — see
+[4.4 Security notes](#44-security-notes). `403` if the id does not belong to
 the tenant.
 
 ## 4. Client specification
@@ -262,6 +268,8 @@ the tenant.
 
 1. Configure `WIDGET_IDTOKEN_JWKS_URL`, `WIDGET_IDTOKEN_ISSUER`,
    `WIDGET_IDTOKEN_CLIENT_ID` on the server and add the app as an OIDC client.
+   The tenant must also have at least one active widget token — that is the
+   per-tenant opt-in for mobile sign-in.
 2. On launch (or when the stored JWT is expired/invalid), obtain an id_token from the
    OS sign-in flow (Google/Apple Sign-In).
 3. Sign in:
@@ -272,12 +280,12 @@ the tenant.
    { "id_token": "<oidc-id-token>" }
    ```
 
-   Store the returned Fider JWT and reuse it until it fails. The user is matched
-   to an existing tenant account by Google/Apple subject, then by email, or
-   provisioned as a new Visitor when unknown. From here on the app calls the
-   existing `/api/v1/*` API with `Authorization: Bearer <jwt>` exactly like any
-   other authenticated user — including admin routes when the account is an
-   administrator.
+   Store the returned Fider JWT (valid **24 hours**) and reuse it until it fails.
+   The user is matched to an existing tenant account by Google/Apple subject,
+   then by email, or provisioned as a new Visitor when unknown. From here on the
+   app calls the existing `/api/v1/*` API with `Authorization: Bearer <jwt>`
+   exactly like any other authenticated user — including admin routes when the
+   account is an administrator.
 4. Optionally persist the user (name/email) from the `user` field for display.
 
 ### 4.3 Retry & error handling
@@ -296,13 +304,15 @@ the tenant.
   usable tokens.
 - Device identifiers (`udid`) are also stored as `SHA-256` digests; the raw value
   is never persisted.
-- JWT expiry is 365 days; clients should be prepared for 401 at any time and
-  re-sign-in.
-- **Token revocation is retroactive for device JWTs**: each JWT issued from a
-  device sign-in is bound to its widget token, and every authenticated request
-  re-checks that the token is still active. Revoking a widget token immediately
-  invalidates the JWTs issued through it. JWTs issued to real users via id_token
-  are unaffected (they are not tied to a widget token).
+- JWT expiry is **365 days** for device JWTs and **24 hours** for id_token JWTs;
+  clients should be prepared for 401 at any time and re-sign-in.
+- **Token revocation is retroactive**: each device JWT is bound to its widget
+  token, and every authenticated request re-checks that the token is still
+  active. Revoking a widget token immediately invalidates the JWTs issued through
+  it. id_token JWTs are not bound to a single token; they remain valid only while
+  the tenant still has **at least one** active widget token, so revoking all
+  tokens (or the last one) ends mobile id_token sessions without blocking the
+  user in the browser UI.
 - **Re-authenticating an existing device requires its `device_secret`**, not just
   the widget token and `udid`. The widget token is shared by every device of a
   tenant, so it alone doesn't identify the caller; `device_secret` is issued once

@@ -241,9 +241,19 @@ func resolveAPIClaimsUser(c *web.Context, claims *jwt.WidgetClaims) (*entity.Use
 	if user.Status == enum.UserBlocked {
 		return nil, false
 	}
-	if widgettoken.ValidateSession(c, claims) != nil {
-		// the widget token this JWT was issued from has been revoked
-		return nil, false
+	if claims.WidgetTokenHash != "" {
+		if widgettoken.ValidateSession(c, claims) != nil {
+			// the widget token this JWT was issued from has been revoked
+			return nil, false
+		}
+	} else if claims.Origin == jwt.FiderClaimsOriginAPI {
+		// id_token sessions are not bound to a single widget token. Require
+		// the tenant to still have at least one active token so an admin
+		// can revoke mobile access without blocking the user.
+		tokens := &query.ListWidgetTokens{}
+		if err := bus.Dispatch(c, tokens); err != nil || len(tokens.Result) == 0 {
+			return nil, false
+		}
 	}
 	return user, true
 }

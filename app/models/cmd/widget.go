@@ -35,8 +35,10 @@ type UpdateWidgetTokenLastUsed struct {
 // without this, the shared tenant widget token alone would let any holder
 // authenticate as any known device_hash.
 type RegisterDeviceUser struct {
-	DeviceHash      string
-	Name            string
+	DeviceHash string
+	Name       string
+	// Email is accepted for compatibility with the sign-in payload but is never
+	// persisted: it is unverified client input and users.email is an identity key.
 	Email           string
 	DeviceSecret    string
 	Result          *entity.User

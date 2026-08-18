@@ -122,7 +122,7 @@ func TestWidgetTokenStorage_DeviceUser(t *testing.T) {
 	Expect(register.Created).IsTrue()
 	Expect(register.Result.ID > 0).IsTrue()
 	Expect(register.Result.Name).Equals("Jane Device")
-	Expect(register.Result.Email).Equals("jane@device.io")
+	Expect(register.Result.Email).Equals("")
 	Expect(register.NewDeviceSecret).NotEquals("")
 
 	// re-authenticating the same device without the secret issued at its
@@ -163,6 +163,28 @@ func TestWidgetTokenStorage_DeviceUser(t *testing.T) {
 	Expect(getUnknown.Result).IsNil()
 }
 
+func TestWidgetTokenStorage_DeviceUser_DoesNotPersistEmail(t *testing.T) {
+	SetupDatabaseTest(t)
+	defer TeardownDatabaseTest()
+
+	register := &cmd.RegisterDeviceUser{
+		DeviceHash: "device-email-squat",
+		Name:       "Squatter",
+		Email:      "victim@got.com",
+	}
+	err := bus.Dispatch(demoTenantCtx, register)
+	Expect(err).IsNil()
+	Expect(register.Result.Email).Equals("")
+
+	// OAuth, magic-link and invite lookup must not resolve a device user by a
+	// client-supplied email — otherwise a widget-token holder can squat an
+	// unused address and later take over the real person's account.
+	byEmail := &query.GetUserByEmail{Email: "victim@got.com"}
+	err = bus.Dispatch(demoTenantCtx, byEmail)
+	Expect(errors.Cause(err)).Equals(app.ErrNotFound)
+	Expect(byEmail.Result).IsNil()
+}
+
 func TestWidgetTokenStorage_DeviceUser_EmailCollision(t *testing.T) {
 	SetupDatabaseTest(t)
 	defer TeardownDatabaseTest()
@@ -170,12 +192,12 @@ func TestWidgetTokenStorage_DeviceUser_EmailCollision(t *testing.T) {
 	first := &cmd.RegisterDeviceUser{DeviceHash: "device-collide-1", Name: "First Device", Email: "collide@device.io"}
 	err := bus.Dispatch(demoTenantCtx, first)
 	Expect(err).IsNil()
-	Expect(first.Result.Email).Equals("collide@device.io")
+	Expect(first.Result.Email).Equals("")
 
 	// A second, different device registering with the same email must still
-	// succeed (email is optional/cosmetic for device users, not their real
-	// identity) instead of failing with a distinguishable error a widget-token
-	// holder could use to enumerate registered emails.
+	// succeed (email is not stored for device users) instead of failing with a
+	// distinguishable error a widget-token holder could use to enumerate
+	// registered emails.
 	second := &cmd.RegisterDeviceUser{DeviceHash: "device-collide-2", Name: "Second Device", Email: "collide@device.io"}
 	err = bus.Dispatch(demoTenantCtx, second)
 	Expect(err).IsNil()

@@ -235,6 +235,10 @@ func TestWidgetAuth_MobileJWT(t *testing.T) {
 		}
 		return app.ErrNotFound
 	})
+	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
+		q.Result = []*entity.WidgetToken{{ID: 1}}
+		return nil
+	})
 
 	server := mock.NewServer()
 	server.Use(middlewares.WidgetAuth())

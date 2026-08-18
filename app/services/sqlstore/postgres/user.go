@@ -331,7 +331,7 @@ func getUserByID(ctx context.Context, q *query.GetUserByID) error {
 func getUserByEmail(ctx context.Context, q *query.GetUserByEmail) error {
 	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, user *entity.User) error {
 		email := strings.ToLower(q.Email)
-		u, err := queryUser(ctx, trx, "email = $1 AND tenant_id = $2", email, tenant.ID)
+		u, err := queryUser(ctx, trx, "email = $1 AND tenant_id = $2 AND device_hash IS NULL", email, tenant.ID)
 		if err != nil {
 			return errors.Wrap(err, "failed to get user with email '%s'", email)
 		}

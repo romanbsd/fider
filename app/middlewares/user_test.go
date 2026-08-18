@@ -413,6 +413,10 @@ func TestUser_ValidMobileJWT_OnAPI(t *testing.T) {
 		}
 		return app.ErrNotFound
 	})
+	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
+		q.Result = []*entity.WidgetToken{{ID: 1}}
+		return nil
+	})
 
 	server := mock.NewServer()
 	server.Use(middlewares.User())
@@ -426,6 +430,39 @@ func TestUser_ValidMobileJWT_OnAPI(t *testing.T) {
 
 	Expect(status).Equals(http.StatusOK)
 	Expect(response.Body.String()).Equals("Jon Snow")
+}
+
+func TestUser_IDTokenJWT_RejectedWhenNoWidgetTokens(t *testing.T) {
+	RegisterT(t)
+
+	token, err := jwt.Encode(jwt.FiderClaims{
+		UserID:        mock.JonSnow.ID,
+		UserName:      mock.JonSnow.Name,
+		Origin:        jwt.FiderClaimsOriginAPI,
+		SecurityStamp: mock.JonSnow.SecurityStamp,
+	})
+	Expect(err).IsNil()
+
+	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
+		q.Result = mock.JonSnow
+		return nil
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
+		q.Result = []*entity.WidgetToken{}
+		return nil
+	})
+
+	server := mock.NewServer()
+	server.Use(middlewares.User())
+	status, _ := server.
+		OnTenant(mock.DemoTenant).
+		WithURL("http://example.com/api/v1/posts").
+		AddHeader("Authorization", "Bearer "+token).
+		ExecuteAsJSON(func(c *web.Context) error {
+			return c.NoContent(http.StatusOK)
+		})
+
+	Expect(status).Equals(http.StatusUnauthorized)
 }
 
 func TestUser_MobileJWT_SecurityStampMismatch(t *testing.T) {
@@ -644,6 +681,10 @@ func TestUser_APIOriginCookie_ValidBearer_StillAuthenticates(t *testing.T) {
 			return nil
 		}
 		return app.ErrNotFound
+	})
+	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
+		q.Result = []*entity.WidgetToken{{ID: 1}}
+		return nil
 	})
 
 	server := mock.NewServer()
