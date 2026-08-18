@@ -45,15 +45,14 @@ func TestJWT_DecodeWidgetClaims(t *testing.T) {
 	RegisterT(t)
 
 	claims := &jwt.WidgetClaims{
-		FiderClaims:     jwt.FiderClaims{UserID: 424, Origin: jwt.FiderClaimsOriginAPI},
-		WidgetTokenHash: "widget-token-hash",
+		FiderClaims: jwt.FiderClaims{UserID: 424, Origin: jwt.FiderClaimsOriginAPI},
 	}
 	token, _ := jwt.Encode(claims)
 
 	decoded, err := jwt.DecodeWidgetClaims(token)
 	Expect(err).IsNil()
 	Expect(decoded.UserID).Equals(claims.UserID)
-	Expect(decoded.WidgetTokenHash).Equals(claims.WidgetTokenHash)
+	Expect(decoded.Origin).Equals(claims.Origin)
 }
 
 func TestJWT_Decode_DifferentSignMethod(t *testing.T) {

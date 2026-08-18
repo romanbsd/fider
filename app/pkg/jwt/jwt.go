@@ -35,12 +35,11 @@ type FiderClaims struct {
 	Metadata
 }
 
-// WidgetClaims represents a JWT issued by the widget/mobile sign-in endpoint.
-// Keeping widget-token revocation state out of FiderClaims prevents ordinary UI
-// sessions from accidentally acquiring widget-session semantics.
+// WidgetClaims represents a JWT issued by the mobile sign-in endpoint.
+// Keeping mobile-session semantics out of FiderClaims prevents ordinary UI
+// sessions from accidentally acquiring mobile-session behaviour.
 type WidgetClaims struct {
 	FiderClaims
-	WidgetTokenHash string `json:"widgettoken/hash,omitempty"`
 }
 
 // OAuthClaims represents what goes into temporary OAuth JWT tokens

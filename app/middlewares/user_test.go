@@ -413,10 +413,6 @@ func TestUser_ValidMobileJWT_OnAPI(t *testing.T) {
 		}
 		return app.ErrNotFound
 	})
-	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
-		q.Result = []*entity.WidgetToken{{ID: 1}}
-		return nil
-	})
 
 	server := mock.NewServer()
 	server.Use(middlewares.User())
@@ -432,7 +428,7 @@ func TestUser_ValidMobileJWT_OnAPI(t *testing.T) {
 	Expect(response.Body.String()).Equals("Jon Snow")
 }
 
-func TestUser_IDTokenJWT_RejectedWhenNoWidgetTokens(t *testing.T) {
+func TestUser_IDTokenJWT_SignsInWithoutWidgetTokens(t *testing.T) {
 	RegisterT(t)
 
 	token, err := jwt.Encode(jwt.FiderClaims{
@@ -447,22 +443,19 @@ func TestUser_IDTokenJWT_RejectedWhenNoWidgetTokens(t *testing.T) {
 		q.Result = mock.JonSnow
 		return nil
 	})
-	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
-		q.Result = []*entity.WidgetToken{}
-		return nil
-	})
 
 	server := mock.NewServer()
 	server.Use(middlewares.User())
-	status, _ := server.
+	status, response := server.
 		OnTenant(mock.DemoTenant).
 		WithURL("http://example.com/api/v1/posts").
 		AddHeader("Authorization", "Bearer "+token).
-		ExecuteAsJSON(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
+		Execute(func(c *web.Context) error {
+			return c.String(http.StatusOK, c.User().Name)
 		})
 
-	Expect(status).Equals(http.StatusUnauthorized)
+	Expect(status).Equals(http.StatusOK)
+	Expect(response.Body.String()).Equals("Jon Snow")
 }
 
 func TestUser_MobileJWT_SecurityStampMismatch(t *testing.T) {
@@ -531,78 +524,6 @@ func TestUser_UIOriginJWT_NotAcceptedAsAPI(t *testing.T) {
 	Expect(status).Equals(http.StatusBadRequest)
 }
 
-func TestUser_RevokedWidgetToken_JWTRejected(t *testing.T) {
-	RegisterT(t)
-
-	token, err := jwt.Encode(jwt.WidgetClaims{
-		FiderClaims: jwt.FiderClaims{
-			UserID:        mock.JonSnow.ID,
-			UserName:      mock.JonSnow.Name,
-			Origin:        jwt.FiderClaimsOriginAPI,
-			SecurityStamp: mock.JonSnow.SecurityStamp,
-		},
-		WidgetTokenHash: "revoked-token-hash",
-	})
-	Expect(err).IsNil()
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
-		q.Result = mock.JonSnow
-		return nil
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		return app.ErrNotFound
-	})
-
-	server := mock.NewServer()
-	server.Use(middlewares.User())
-	status, _ := server.
-		OnTenant(mock.DemoTenant).
-		WithURL("http://example.com/api/v1/posts").
-		AddHeader("Authorization", "Bearer "+token).
-		ExecuteAsJSON(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(status).Equals(http.StatusUnauthorized)
-}
-
-func TestUser_RevokedWidgetToken_CookieRejected(t *testing.T) {
-	RegisterT(t)
-
-	token, err := jwt.Encode(jwt.WidgetClaims{
-		FiderClaims: jwt.FiderClaims{
-			UserID:        mock.JonSnow.ID,
-			UserName:      mock.JonSnow.Name,
-			SecurityStamp: mock.JonSnow.SecurityStamp,
-		},
-		WidgetTokenHash: "revoked-token-hash",
-	})
-	Expect(err).IsNil()
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
-		q.Result = mock.JonSnow
-		return nil
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		return app.ErrNotFound
-	})
-
-	server := mock.NewServer()
-	server.Use(middlewares.User())
-	status, response := server.
-		OnTenant(mock.DemoTenant).
-		AddCookie(web.CookieAuthName, token).
-		Execute(func(c *web.Context) error {
-			if c.User() == nil {
-				return c.NoContent(http.StatusNoContent)
-			}
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(status).Equals(http.StatusNoContent)
-	Expect(response.Header().Get("Set-Cookie")).ContainsSubstring(web.CookieAuthName + "=;")
-}
-
 func TestUser_APIOriginJWT_NotAcceptedAsCookie(t *testing.T) {
 	RegisterT(t)
 
@@ -613,24 +534,19 @@ func TestUser_APIOriginJWT_NotAcceptedAsCookie(t *testing.T) {
 			Origin:        jwt.FiderClaimsOriginAPI,
 			SecurityStamp: mock.JonSnow.SecurityStamp,
 		},
-		WidgetTokenHash: "active-token-hash",
 	})
 	Expect(err).IsNil()
 
 	// The token is fully valid in every other respect (user resolves, security
-	// stamp matches, widget token is active) — only its Origin marks it as a
-	// bearer-only API credential. Without the Origin check this would open a
-	// full UI session for the user.
+	// stamp matches) — only its Origin marks it as a bearer-only API
+	// credential. Without the Origin check this would open a full UI session
+	// for the user.
 	bus.AddHandler(func(ctx context.Context, q *query.GetUserByID) error {
 		if q.UserID == mock.JonSnow.ID {
 			q.Result = mock.JonSnow
 			return nil
 		}
 		return app.ErrNotFound
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
-		return nil
 	})
 
 	server := mock.NewServer()
@@ -660,7 +576,6 @@ func TestUser_APIOriginCookie_ValidBearer_StillAuthenticates(t *testing.T) {
 			UserName: "Widget",
 			Origin:   jwt.FiderClaimsOriginAPI,
 		},
-		WidgetTokenHash: "whatever",
 	})
 	Expect(err).IsNil()
 
@@ -681,10 +596,6 @@ func TestUser_APIOriginCookie_ValidBearer_StillAuthenticates(t *testing.T) {
 			return nil
 		}
 		return app.ErrNotFound
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
-		q.Result = []*entity.WidgetToken{{ID: 1}}
-		return nil
 	})
 
 	server := mock.NewServer()

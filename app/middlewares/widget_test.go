@@ -7,7 +7,6 @@ import (
 
 	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/middlewares"
-	"github.com/getfider/fider/app/models/cmd"
 	"github.com/getfider/fider/app/models/entity"
 	"github.com/getfider/fider/app/models/enum"
 	"github.com/getfider/fider/app/models/query"
@@ -16,189 +15,15 @@ import (
 	"github.com/getfider/fider/app/pkg/jwt"
 	"github.com/getfider/fider/app/pkg/mock"
 	"github.com/getfider/fider/app/pkg/web"
-	"github.com/getfider/fider/app/pkg/widgettoken"
 )
-
-const testDeviceSecret = "test-device-secret"
-
-var testDeviceUser = &entity.User{
-	ID:               99,
-	Name:             "Widget Visitor",
-	Email:            "visitor@widget.io",
-	Tenant:           mock.DemoTenant,
-	Status:           enum.UserActive,
-	Role:             enum.RoleVisitor,
-	DeviceSecretHash: entity.HashDeviceSecret(testDeviceSecret),
-}
-
-func registerWidgetBus() {
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		return app.ErrNotFound
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		return app.ErrNotFound
-	})
-	bus.AddHandler(func(ctx context.Context, c *cmd.UpdateWidgetTokenLastUsed) error {
-		return nil
-	})
-}
 
 func TestWidgetAuth_NoCredentials(t *testing.T) {
 	RegisterT(t)
-	registerWidgetBus()
 
 	server := mock.NewServer()
 	server.Use(middlewares.WidgetAuth())
 	status, _ := server.
 		OnTenant(mock.DemoTenant).
-		Execute(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(status).Equals(http.StatusUnauthorized)
-}
-
-func TestWidgetAuth_WidgetToken(t *testing.T) {
-	RegisterT(t)
-	registerWidgetBus()
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
-		return nil
-	})
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		if q.DeviceHash == widgettoken.DeviceHash("11111111-1111-4111-8111-111111111111") {
-			q.Result = testDeviceUser
-			return nil
-		}
-		return app.ErrNotFound
-	})
-
-	server := mock.NewServer()
-	server.Use(middlewares.WidgetAuth())
-	status, response := server.
-		OnTenant(mock.DemoTenant).
-		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
-		AddHeader("X-Widget-Device-Secret", testDeviceSecret).
-		Execute(func(c *web.Context) error {
-			return c.String(http.StatusOK, c.User().Name)
-		})
-
-	Expect(status).Equals(http.StatusOK)
-	Expect(response.Body.String()).Equals("Widget Visitor")
-}
-
-func TestWidgetAuth_WidgetToken_MissingDeviceSecret(t *testing.T) {
-	RegisterT(t)
-	registerWidgetBus()
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
-		return nil
-	})
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		if q.DeviceHash == widgettoken.DeviceHash("11111111-1111-4111-8111-111111111111") {
-			q.Result = testDeviceUser
-			return nil
-		}
-		return app.ErrNotFound
-	})
-
-	server := mock.NewServer()
-	server.Use(middlewares.WidgetAuth())
-	status, _ := server.
-		OnTenant(mock.DemoTenant).
-		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
-		Execute(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(status).Equals(http.StatusUnauthorized)
-}
-
-func TestWidgetAuth_WidgetToken_WrongDeviceSecret(t *testing.T) {
-	RegisterT(t)
-	registerWidgetBus()
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
-		return nil
-	})
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		if q.DeviceHash == widgettoken.DeviceHash("11111111-1111-4111-8111-111111111111") {
-			q.Result = testDeviceUser
-			return nil
-		}
-		return app.ErrNotFound
-	})
-
-	server := mock.NewServer()
-	server.Use(middlewares.WidgetAuth())
-	status, _ := server.
-		OnTenant(mock.DemoTenant).
-		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
-		AddHeader("X-Widget-Device-Secret", "not-the-right-secret").
-		Execute(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(status).Equals(http.StatusUnauthorized)
-}
-
-func TestWidgetAuth_WidgetToken_Invalid(t *testing.T) {
-	RegisterT(t)
-	registerWidgetBus()
-
-	server := mock.NewServer()
-	server.Use(middlewares.WidgetAuth())
-	status, _ := server.
-		OnTenant(mock.DemoTenant).
-		AddHeader("X-Widget-Token", "invalid-token").
-		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
-		Execute(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(status).Equals(http.StatusUnauthorized)
-}
-
-func TestWidgetAuth_WidgetToken_MissingUDID(t *testing.T) {
-	RegisterT(t)
-	registerWidgetBus()
-
-	server := mock.NewServer()
-	server.Use(middlewares.WidgetAuth())
-	status, _ := server.
-		OnTenant(mock.DemoTenant).
-		AddHeader("X-Widget-Token", "some-raw-token").
-		Execute(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(status).Equals(http.StatusUnauthorized)
-}
-
-func TestWidgetAuth_WidgetToken_DeviceNotFound(t *testing.T) {
-	RegisterT(t)
-	registerWidgetBus()
-
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
-		return nil
-	})
-
-	server := mock.NewServer()
-	server.Use(middlewares.WidgetAuth())
-	status, _ := server.
-		OnTenant(mock.DemoTenant).
-		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "22222222-2222-4222-8222-222222222222").
 		Execute(func(c *web.Context) error {
 			return c.NoContent(http.StatusOK)
 		})
@@ -208,7 +33,6 @@ func TestWidgetAuth_WidgetToken_DeviceNotFound(t *testing.T) {
 
 func TestWidgetAuth_MobileJWT(t *testing.T) {
 	RegisterT(t)
-	registerWidgetBus()
 
 	mobileUser := &entity.User{
 		ID:            mock.JonSnow.ID,
@@ -235,10 +59,6 @@ func TestWidgetAuth_MobileJWT(t *testing.T) {
 		}
 		return app.ErrNotFound
 	})
-	bus.AddHandler(func(ctx context.Context, q *query.ListWidgetTokens) error {
-		q.Result = []*entity.WidgetToken{{ID: 1}}
-		return nil
-	})
 
 	server := mock.NewServer()
 	server.Use(middlewares.WidgetAuth())
@@ -255,7 +75,6 @@ func TestWidgetAuth_MobileJWT(t *testing.T) {
 
 func TestWidgetAuth_MobileJWT_Invalid(t *testing.T) {
 	RegisterT(t)
-	registerWidgetBus()
 
 	server := mock.NewServer()
 	server.Use(middlewares.WidgetAuth())
@@ -271,7 +90,6 @@ func TestWidgetAuth_MobileJWT_Invalid(t *testing.T) {
 
 func TestWidgetAuth_SignInEndpoint(t *testing.T) {
 	RegisterT(t)
-	registerWidgetBus()
 
 	server := mock.NewServer()
 	server.Use(middlewares.WidgetAuth())
@@ -370,35 +188,4 @@ func TestWidgetRateLimit_BlockedClientDoesNotConsumeTenantCapacity(t *testing.T)
 	// 100 rejected requests would have drained the shared tenant bucket and B
 	// would be blocked here.
 	Expect(signIn("10.0.0.2")).Equals(http.StatusOK)
-}
-
-func TestWidgetAuth_TracksLastUsed(t *testing.T) {
-	RegisterT(t)
-	registerWidgetBus()
-
-	touched := false
-	bus.AddHandler(func(ctx context.Context, c *cmd.UpdateWidgetTokenLastUsed) error {
-		touched = true
-		return nil
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.GetWidgetTokenByHash) error {
-		q.Result = &entity.WidgetToken{ID: 1, Hash: q.Hash}
-		return nil
-	})
-	bus.AddHandler(func(ctx context.Context, q *query.GetUserByDeviceHash) error {
-		q.Result = testDeviceUser
-		return nil
-	})
-
-	server := mock.NewServer()
-	server.Use(middlewares.WidgetAuth())
-	_, _ = server.
-		OnTenant(mock.DemoTenant).
-		AddHeader("X-Widget-Token", "some-raw-token").
-		AddHeader("X-Widget-UDID", "11111111-1111-4111-8111-111111111111").
-		Execute(func(c *web.Context) error {
-			return c.NoContent(http.StatusOK)
-		})
-
-	Expect(touched).IsTrue()
 }

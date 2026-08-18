@@ -18,7 +18,6 @@ import (
 	"github.com/getfider/fider/app/pkg/jwt"
 	"github.com/getfider/fider/app/pkg/web"
 	webutil "github.com/getfider/fider/app/pkg/web/util"
-	"github.com/getfider/fider/app/pkg/widgettoken"
 )
 
 // User gets JWT Auth token from cookie and insert into context
@@ -45,11 +44,9 @@ func User() web.MiddlewareFunc {
 
 			if token != "" {
 				// Decoded as WidgetClaims (a superset of FiderClaims) rather than
-				// FiderClaims directly: a device-issued JWT carries a
-				// WidgetTokenHash, and its revocation must be re-checked below
-				// regardless of whether the client sends it as a cookie or a
-				// bearer token. A regular UI-session JWT simply has this field
-				// empty.
+				// FiderClaims directly so the Origin claim is available to reject
+				// mobile/mobile-API credentials when they are presented as an
+				// auth cookie instead of a bearer token.
 				claims, err := jwt.DecodeWidgetClaims(token)
 				if err != nil {
 					c.RemoveCookie(web.CookieAuthName)
@@ -101,14 +98,6 @@ func User() web.MiddlewareFunc {
 						}
 						return c.Redirect("/signin")
 					}
-
-					// A device-issued JWT is bound to the widget token it came from;
-					// re-check that the token is still active so revocation applies
-					// no matter which transport (cookie or bearer) the client uses.
-					if claims.WidgetTokenHash != "" && widgettoken.ValidateSession(c, claims) != nil {
-						c.RemoveCookie(web.CookieAuthName)
-						return next(c)
-					}
 				}
 			}
 
@@ -123,6 +112,12 @@ func User() web.MiddlewareFunc {
 						return err
 					}
 					user = resolved
+					// Mark the request as authenticated through the mobile API
+					// channel (an API-origin JWT). Middleware that runs later
+					// (e.g. CORS) uses this to permit cross-origin clients
+					// without widening the same-origin-only posture of ordinary
+					// UI-cookie sessions.
+					c.Set(app.MobileApiCtxKey, true)
 				}
 			}
 
@@ -225,11 +220,10 @@ func resolveImpersonatedUser(c *web.Context, user *entity.User, impersonateUserI
 	return userByImpersonateID.Result, false, nil
 }
 
-// resolveAPIClaimsUser validates a Fider JWT issued through the mobile/widget API
+// resolveAPIClaimsUser validates a Fider JWT issued through the mobile API
 // against the current tenant: the user must exist in the tenant, its security
-// stamp must match, it must not be blocked, and the widget token the JWT was
-// issued from (if any) must still be active. Returns the tenant-scoped user, or
-// (nil, false) when the token is no longer usable.
+// stamp must match, and it must not be blocked. Returns the tenant-scoped user,
+// or (nil, false) when the token is no longer usable.
 func resolveAPIClaimsUser(c *web.Context, claims *jwt.WidgetClaims) (*entity.User, bool) {
 	user, err := findUserByClaims(c, &claims.FiderClaims)
 	if err != nil || user == nil {
@@ -240,20 +234,6 @@ func resolveAPIClaimsUser(c *web.Context, claims *jwt.WidgetClaims) (*entity.Use
 	}
 	if user.Status == enum.UserBlocked {
 		return nil, false
-	}
-	if claims.WidgetTokenHash != "" {
-		if widgettoken.ValidateSession(c, claims) != nil {
-			// the widget token this JWT was issued from has been revoked
-			return nil, false
-		}
-	} else if claims.Origin == jwt.FiderClaimsOriginAPI {
-		// id_token sessions are not bound to a single widget token. Require
-		// the tenant to still have at least one active token so an admin
-		// can revoke mobile access without blocking the user.
-		tokens := &query.ListWidgetTokens{}
-		if err := bus.Dispatch(c, tokens); err != nil || len(tokens.Result) == 0 {
-			return nil, false
-		}
 	}
 	return user, true
 }
