@@ -20,6 +20,7 @@ func setupMigrationTest(t *testing.T) {
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_repair_dummy")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_atomic_dummy")
 	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_drop_dummy")
+	_, _ = trx.Execute("DROP TABLE IF EXISTS conc_replace_dummy")
 	trx.MustCommit()
 }
 
@@ -218,4 +219,47 @@ func TestMigrate_ConcurrentDrop_ExecutesStandaloneDrop(t *testing.T) {
 		WHERE tablename = 'conc_drop_dummy' AND indexname = 'conc_drop_dummy_idx'`)
 	Expect(err).IsNil()
 	Expect(count).Equals(0)
+}
+
+// TestMigrate_ConcurrentIndex_ReplacesValidIndex verifies that a DROP INDEX
+// CONCURRENTLY followed by a same-named CREATE INDEX CONCURRENTLY with a
+// DIFFERENT definition is treated as an intentional replacement, not a no-op
+// repair: the drop runs even though the existing index is valid, so the new
+// definition actually replaces the old one. Only a rebuild that reproduces the
+// existing index exactly is skipped (see
+// TestMigrate_ConcurrentIndex_SkipsValidIndexDrop).
+func TestMigrate_ConcurrentIndex_ReplacesValidIndex(t *testing.T) {
+	setupMigrationTest(t)
+	ctx := context.Background()
+
+	trx, _ := dbx.BeginTx(ctx)
+	_, err := trx.Execute(`CREATE TABLE conc_replace_dummy (id BIGSERIAL PRIMARY KEY, tenant_id INT NOT NULL, device_hash TEXT)`)
+	Expect(err).IsNil()
+	_, err = trx.Execute(`CREATE UNIQUE INDEX conc_replace_dummy_idx ON conc_replace_dummy (tenant_id)`)
+	Expect(err).IsNil()
+	trx.MustCommit()
+
+	trx, _ = dbx.BeginTx(ctx)
+	var oidBefore string
+	err = trx.Scalar(&oidBefore, `SELECT indexrelid::text FROM pg_index WHERE indexrelid = 'conc_replace_dummy_idx'::regclass`)
+	Expect(err).IsNil()
+	trx.MustRollback()
+
+	err = dbx.Migrate(ctx, "/app/pkg/dbx/testdata/migration_concurrent_replace")
+	Expect(err).IsNil()
+
+	trx, _ = dbx.BeginTx(ctx)
+	defer trx.MustRollback()
+
+	// The index was dropped and rebuilt (new OID), so the replacement applied.
+	var oidAfter string
+	err = trx.Scalar(&oidAfter, `SELECT indexrelid::text FROM pg_index WHERE indexrelid = 'conc_replace_dummy_idx'::regclass`)
+	Expect(err).IsNil()
+	Expect(oidAfter).NotEquals(oidBefore)
+
+	// And it now carries the new definition.
+	var def string
+	err = trx.Scalar(&def, `SELECT pg_get_indexdef('conc_replace_dummy_idx'::regclass)`)
+	Expect(err).IsNil()
+	Expect(def).ContainsSubstring("tenant_id, device_hash")
 }

@@ -136,16 +136,24 @@ func runMigration(ctx context.Context, version int, path, fileName string) error
 					if err != nil {
 						return errors.Wrap(err, "failed to run migration '%s'", fileName)
 					}
-					if valid && rebuildsIndex(statements, i+1, name) {
-						// This drop is the repair half of a drop-then-rebuild
-						// sequence: the index is valid, so dropping it here would
-						// open a window, before the CONCURRENTLY rebuild below
-						// completes, where concurrent writes could violate the
-						// constraint it enforces (and could then make the rebuild
-						// itself fail). Only an invalid index left behind by an
-						// interrupted CONCURRENTLY build, or a standalone drop
-						// with nothing rebuilding the index, is executed here.
-						continue
+					if valid {
+						existing, err := existingIndexDefinition(name)
+						if err != nil {
+							return errors.Wrap(err, "failed to run migration '%s'", fileName)
+						}
+						if rebuildsSameIndex(statements, i+1, name, existing) {
+							// The drop is the no-op half of a drop-then-rebuild
+							// whose rebuild produces exactly the index already
+							// present. Skipping it avoids the window, before the
+							// CONCURRENTLY rebuild completes, where concurrent
+							// writes could violate the constraint it enforces
+							// (and could then make the rebuild itself fail). A
+							// drop followed by a same-named rebuild with a
+							// DIFFERENT definition is an intentional replacement
+							// and must run, so only a matching definition is
+							// skipped.
+							continue
+						}
 					}
 				}
 				if _, err := conn.Exec(statement); err != nil {
@@ -211,21 +219,141 @@ var dropIndexRegex = regexp.MustCompile(`(?i)^DROP\s+INDEX\s+(?:CONCURRENTLY\s+)
 // drop-then-rebuild repair sequence apart from a standalone DROP INDEX.
 var createIndexRegex = regexp.MustCompile(`(?i)^CREATE\s+(UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(` + identPattern + `(?:\.` + identPattern + `)?)`)
 
-// rebuildsIndex reports whether statements[start:] contains a CREATE INDEX for
-// the given name, i.e. the migration drops then rebuilds it (the repair
-// recovery sequence). Used to decide whether a DROP INDEX of an already-valid
-// index is the repair half of that sequence (skip it, to avoid a window where
-// concurrent writes could violate the constraint) or a standalone drop that
-// the author intends to execute.
-func rebuildsIndex(statements []string, start int, name string) bool {
+// indexDefinition captures the defining parts of an index so a requested
+// CREATE INDEX can be compared with the index that already exists under the
+// same name. Values are normalized (lowercased, whitespace collapsed) so
+// formatting differences do not count as definition changes.
+type indexDefinition struct {
+	unique    bool
+	method    string
+	columns   string
+	predicate string
+}
+
+var usingRegex = regexp.MustCompile(`\busing\s+([a-z_0-9]+)`)
+
+// parseCreateIndex extracts the definition of a CREATE INDEX statement. The
+// statement must already have leading comments stripped. Returns false when
+// the statement is not a parseable CREATE INDEX.
+func parseCreateIndex(stmt string) (indexDefinition, bool) {
+	norm := collapseSpaces(strings.ToLower(stmt))
+	if !strings.HasPrefix(norm, "create ") || !strings.Contains(norm, " index ") {
+		return indexDefinition{}, false
+	}
+	def := indexDefinition{method: "btree"}
+	def.unique = strings.HasPrefix(norm, "create unique ")
+
+	if m := usingRegex.FindStringSubmatch(norm); m != nil {
+		def.method = m[1]
+	}
+
+	// Index columns are the first balanced parentheses after the ON clause
+	// (expressions and INCLUDE lists come after it).
+	if on := strings.Index(norm, " on "); on != -1 {
+		open := strings.Index(norm[on+4:], "(")
+		if cols, ok := balancedParens(norm, on+4+open); ok {
+			def.columns = collapseSpaces(cols)
+		}
+	}
+
+	if where := strings.Index(norm, " where "); where != -1 {
+		def.predicate = collapseSpaces(norm[where+len(" where "):])
+	}
+
+	return def, def.columns != ""
+}
+
+// balancedParens returns the text inside the parentheses at position open,
+// honouring nesting.
+func balancedParens(s string, open int) (string, bool) {
+	if open < 0 || open >= len(s) || s[open] != '(' {
+		return "", false
+	}
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[open+1 : i], true
+			}
+		}
+	}
+	return "", false
+}
+
+// existingIndexDefinition reads the definition of the index that currently
+// exists under the given name from the catalog.
+func existingIndexDefinition(name string) (indexDefinition, error) {
+	var def indexDefinition
+	var predicate string
+	row := conn.QueryRow(`
+		SELECT i.indisunique, am.amname, COALESCE(pg_get_expr(i.indpred, i.indrelid), '')
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_am am ON am.oid = c.relam
+		WHERE i.indexrelid = to_regclass($1)`, name)
+	if err := row.Scan(&def.unique, &def.method, &predicate); err != nil {
+		return def, err
+	}
+	def.predicate = collapseSpaces(predicate)
+
+	rows, err := conn.Query(`
+		SELECT a.attname
+		FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+		WHERE i.indexrelid = to_regclass($1)
+		ORDER BY array_position(i.indkey, a.attnum)`, name)
+	if err != nil {
+		return def, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var columns []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return def, err
+		}
+		columns = append(columns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return def, err
+	}
+	def.columns = collapseSpaces(strings.Join(columns, ","))
+	return def, nil
+}
+
+// rebuildsSameIndex reports whether statements[start:] contains a CREATE INDEX
+// for the given name whose definition matches the index that already exists.
+// Only a drop-then-rebuild that reproduces the existing index is the no-op
+// repair half of the recovery sequence; a same-named rebuild with a different
+// definition is an intentional replacement whose drop must run.
+func rebuildsSameIndex(statements []string, start int, name string, existing indexDefinition) bool {
 	for _, s := range statements[start:] {
-		m := createIndexRegex.FindStringSubmatch(stripLeadingComments(s))
+		stripped := stripLeadingComments(s)
+		m := createIndexRegex.FindStringSubmatch(stripped)
 		// group 1 is the optional "UNIQUE " token; group 2 is the index name
-		if m != nil && m[2] == name {
+		if m == nil || m[2] != name {
+			continue
+		}
+		requested, ok := parseCreateIndex(stripped)
+		if ok && requested == existing {
 			return true
 		}
 	}
 	return false
+}
+
+// collapseSpaces normalizes whitespace in s for definition comparison: all
+// whitespace runs collapse to a single space and spaces after commas are
+// removed, so formatting differences between a migration's CREATE INDEX text
+// and the catalog-normalized definition of the existing index do not count as
+// definition changes.
+func collapseSpaces(s string) string {
+	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), ", ", ",")
 }
 
 // stripLeadingComments removes any leading line/block comments from s (as
