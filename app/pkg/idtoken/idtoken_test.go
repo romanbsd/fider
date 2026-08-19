@@ -97,6 +97,54 @@ func TestValidator_Verify(t *testing.T) {
 	Expect(claims.Name).Equals("Jane Doe")
 }
 
+func TestValidator_EmailVerified_AcceptedForms(t *testing.T) {
+	RegisterT(t)
+	validator, priv := newValidator(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"boolean true", true},
+		{"string true", "true"},
+		{"string uppercase True", "True"},
+	} {
+		claims, err := validator.Verify(ctx, signToken(priv, func(c jwtgo.MapClaims) {
+			c["email_verified"] = tc.value
+		}))
+		Expect(err).IsNil()
+		Expect(claims.EmailVerified).IsTrue()
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"boolean false", false},
+		{"string false", "false"},
+		{"malformed", "yes"},
+		{"number", 1},
+	} {
+		claims, err := validator.Verify(ctx, signToken(priv, func(c jwtgo.MapClaims) {
+			c["email_verified"] = tc.value
+		}))
+		Expect(err).IsNil()
+		Expect(claims.EmailVerified).IsFalse()
+	}
+}
+
+func TestValidator_EmailVerified_Missing(t *testing.T) {
+	RegisterT(t)
+	validator, priv := newValidator(t)
+
+	claims, err := validator.Verify(context.Background(), signToken(priv, func(c jwtgo.MapClaims) {
+		delete(c, "email_verified")
+	}))
+	Expect(err).IsNil()
+	Expect(claims.EmailVerified).IsFalse()
+}
+
 func TestValidator_WrongAudience(t *testing.T) {
 	RegisterT(t)
 	validator, priv := newValidator(t)
