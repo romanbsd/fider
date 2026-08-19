@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,14 +115,28 @@ func (v *Validator) Verify(ctx context.Context, token string) (*Claims, error) {
 
 	email, _ := claims["email"].(string)
 	name, _ := claims["name"].(string)
-	emailVerified, _ := claims["email_verified"].(bool)
 
 	return &Claims{
 		UserID:        sub,
 		Email:         email,
-		EmailVerified: emailVerified,
+		EmailVerified: parseEmailVerified(claims["email_verified"]),
 		Name:          name,
 	}, nil
+}
+
+// parseEmailVerified accepts Apple's email_verified claim as either a JSON
+// boolean true or the string "true" (the Apple web SDK emits the string form).
+// Every other representation — missing, false, or malformed — is treated as
+// unverified, which the sign-in flow then rejects.
+func parseEmailVerified(raw any) bool {
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true")
+	default:
+		return false
+	}
 }
 
 func validateAudience(claims jwtgo.MapClaims, clientID string) error {
