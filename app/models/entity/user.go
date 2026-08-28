@@ -20,6 +20,10 @@ type User struct {
 	Status        enum.UserStatus `json:"status"`
 	IsTrusted     bool            `json:"isTrusted"`
 	SecurityStamp string          `json:"-"`
+	// NameIsPlaceholder marks a Name that was auto-assigned (e.g. "Anonymous"
+	// for a Firebase anonymous account) rather than chosen by the user, so a
+	// later identity hydration knows it's safe to overwrite.
+	NameIsPlaceholder bool `json:"-"`
 }
 
 // HasProvider returns true if current user has registered with given provider

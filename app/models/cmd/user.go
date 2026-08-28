@@ -49,10 +49,29 @@ type RegisterUserProvider struct {
 	ProviderUID  string
 }
 
+// LockUserProviderIdentity serializes provisioning of one external identity
+// within a tenant for the duration of the current database transaction. A
+// verified email, when present, is locked as well so two different provider
+// UIDs sharing an email cannot race on the same Fider user.
+type LockUserProviderIdentity struct {
+	ProviderName string
+	ProviderUID  string
+	Email        string
+}
+
+// HydrateUserIdentity fills profile fields that were unavailable when an
+// anonymous external identity was first provisioned.
+type HydrateUserIdentity struct {
+	UserID int
+	Name   string
+	Email  string
+	Result *entity.User
+}
+
 type UpdateCurrentUser struct {
 	Name       string
 	AvatarType enum.AvatarType
 	Avatar     *dto.ImageUpload
 }
 
-type RotateAllUserSecurityStamps struct {}
+type RotateAllUserSecurityStamps struct{}

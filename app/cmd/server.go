@@ -13,6 +13,7 @@ import (
 	"github.com/getfider/fider/app/pkg/bus"
 	"github.com/getfider/fider/app/pkg/env"
 	"github.com/getfider/fider/app/pkg/errors"
+	"github.com/getfider/fider/app/pkg/firebase"
 	"github.com/getfider/fider/app/pkg/log"
 	"github.com/getfider/fider/app/pkg/web"
 	"github.com/robfig/cron"
@@ -38,6 +39,10 @@ import (
 func RunServer() int {
 	svcs := bus.Init()
 	ctx := log.WithProperty(context.Background(), log.PropertyKeyTag, "BOOTSTRAP")
+	if err := firebase.Initialize(ctx); err != nil {
+		log.Error(ctx, errors.Wrap(err, "failed to initialize Firebase"))
+		return 1
+	}
 	for _, s := range svcs {
 		log.Debugf(ctx, "Service '@{ServiceCategory}.@{ServiceName}' has been initialized.", dto.Props{
 			"ServiceCategory": s.Category(),

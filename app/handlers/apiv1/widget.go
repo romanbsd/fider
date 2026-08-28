@@ -1,14 +1,23 @@
 package apiv1
 
 import (
+	stderrors "errors"
+	"strings"
 	"time"
 
 	"github.com/getfider/fider/app/handlers"
+	"github.com/getfider/fider/app/middlewares"
+	"github.com/getfider/fider/app/models/cmd"
+	"github.com/getfider/fider/app/models/dto"
 	"github.com/getfider/fider/app/models/entity"
+	"github.com/getfider/fider/app/models/enum"
+	"github.com/getfider/fider/app/pkg/bus"
 	"github.com/getfider/fider/app/pkg/env"
 	"github.com/getfider/fider/app/pkg/errors"
+	"github.com/getfider/fider/app/pkg/firebase"
 	"github.com/getfider/fider/app/pkg/idtoken"
 	"github.com/getfider/fider/app/pkg/jwt"
+	"github.com/getfider/fider/app/pkg/log"
 	"github.com/getfider/fider/app/pkg/validate"
 	"github.com/getfider/fider/app/pkg/web"
 )
@@ -86,8 +95,11 @@ var verifyIDToken = func(c *web.Context, rawIDToken string) (*idtoken.Claims, st
 }
 
 type widgetSignInInput struct {
-	IDToken string `json:"id_token"`
+	IDToken         string `json:"id_token"`
+	FirebaseIDToken string `json:"firebase_id_token"`
 }
+
+var errSignInUnauthorized = stderrors.New("sign-in is not authorized")
 
 // MobileSignIn authenticates a mobile/web client via an identity-provider
 // id_token and returns a Fider JWT for subsequent requests to /api/v1/*.
@@ -98,15 +110,40 @@ func MobileSignIn() web.HandlerFunc {
 			return c.Failure(err)
 		}
 
-		if input.IDToken == "" {
+		if input.IDToken == "" && input.FirebaseIDToken == "" {
 			return c.BadRequest(web.Map{
 				"errors": web.Map{"id_token": "id_token is required"},
 			})
 		}
+		if input.IDToken != "" && input.FirebaseIDToken != "" {
+			return c.BadRequest(web.Map{
+				"errors": web.Map{"id_token": "id_token and firebase_id_token are mutually exclusive"},
+			})
+		}
 
-		user, err := signInByIDToken(c, input.IDToken)
-		if err != nil {
-			return c.HandleValidation(validate.Failed(err.Error()))
+		var (
+			user *entity.User
+			err  error
+		)
+		if input.FirebaseIDToken != "" {
+			if _, appCheckErr := middlewares.RequireAppCheck(c); appCheckErr != nil {
+				return c.UnauthorizedJSON()
+			}
+			user, err = signInByFirebaseIDToken(c, input.FirebaseIDToken)
+			if err != nil {
+				if stderrors.Is(err, errSignInUnauthorized) {
+					return c.UnauthorizedJSON()
+				}
+				return c.Failure(err)
+			}
+		} else {
+			user, err = signInByIDToken(c, input.IDToken)
+			if err != nil {
+				if stderrors.Is(err, errSignInUnauthorized) {
+					return c.UnauthorizedJSON()
+				}
+				return c.HandleValidation(validate.Failed(err.Error()))
+			}
 		}
 
 		token, err := jwt.Encode(jwt.FiderClaims{
@@ -130,6 +167,69 @@ func MobileSignIn() web.HandlerFunc {
 	}
 }
 
+func signInByFirebaseIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {
+	claims, err := firebase.VerifyIDToken(c, rawIDToken)
+	if err != nil {
+		log.Warnf(c, "Firebase ID token verification failed: @{Error}", dto.Props{"Error": err})
+	}
+	if err != nil || claims == nil || strings.TrimSpace(claims.UID) == "" {
+		return nil, errSignInUnauthorized
+	}
+
+	const provider = "firebase"
+
+	email := ""
+	if claims.EmailVerified {
+		email = claims.Email
+	}
+	if err := bus.Dispatch(c, &cmd.LockUserProviderIdentity{
+		ProviderName: provider,
+		ProviderUID:  claims.UID,
+		Email:        email,
+	}); err != nil {
+		return nil, err
+	}
+
+	existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UID, email)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil && existing.Status != enum.UserActive {
+		return nil, errSignInUnauthorized
+	}
+	if err := handlers.RequireProviderAdmission(c.Tenant(), existing, false); err != nil {
+		return nil, errSignInUnauthorized
+	}
+
+	// Only a genuinely anonymous Firebase identity gets the "Anonymous"
+	// placeholder; a nameless-but-authenticated Firebase user behaves like the
+	// OIDC path and keeps an empty name rather than being mislabeled.
+	name := strings.TrimSpace(claims.Name)
+	nameIsPlaceholder := false
+	if name == "" && claims.Anonymous {
+		name = "Anonymous"
+		nameIsPlaceholder = true
+	}
+	user, err := handlers.RegisterUserByProvider(c, c.Tenant(), existing, provider, claims.UID, name, email, nameIsPlaceholder)
+	if err != nil {
+		return nil, err
+	}
+
+	// Hydrate only previously empty or placeholder profile fields. Skip users
+	// that are already fully populated or were created in this request.
+	if existing != nil && (claims.Name != "" || email != "") &&
+		(user.Name == "" || user.NameIsPlaceholder || user.Email == "") {
+		hydrate := &cmd.HydrateUserIdentity{UserID: user.ID, Name: claims.Name, Email: email}
+		if err := bus.Dispatch(c, hydrate); err != nil {
+			return nil, err
+		}
+		if hydrate.Result != nil {
+			user = hydrate.Result
+		}
+	}
+	return user, nil
+}
+
 // MobileSignOut acknowledges the sign out request. The server keeps nothing
 // per-session and does NOT invalidate the issued JWT: rotating the user's
 // security stamp here would log the user out everywhere (browser UI, other
@@ -147,13 +247,28 @@ func signInByIDToken(c *web.Context, rawIDToken string) (*entity.User, error) {
 		return nil, err
 	}
 
+	email := ""
+	if claims.EmailVerified {
+		email = claims.Email
+	}
+	if err := bus.Dispatch(c, &cmd.LockUserProviderIdentity{
+		ProviderName: provider,
+		ProviderUID:  claims.UserID,
+		Email:        email,
+	}); err != nil {
+		return nil, err
+	}
+
 	existing, err := handlers.FindUserByProviderOrEmail(c, provider, claims.UserID, claims.Email)
 	if err != nil {
 		return nil, err
 	}
+	if existing != nil && existing.Status != enum.UserActive {
+		return nil, errSignInUnauthorized
+	}
 
 	if err := handlers.RequireProviderAdmission(c.Tenant(), existing, false); err != nil {
-		return nil, err
+		return nil, errSignInUnauthorized
 	}
-	return handlers.RegisterUserByProvider(c, c.Tenant(), existing, provider, claims.UserID, claims.Name, claims.Email)
+	return handlers.RegisterUserByProvider(c, c.Tenant(), existing, provider, claims.UserID, claims.Name, claims.Email, false)
 }

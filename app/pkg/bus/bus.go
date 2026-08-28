@@ -49,9 +49,9 @@ func Reset() {
 	handlersCallCounter = make(map[string]int)
 }
 
-// Initializes the bus services that have been registered via bus.Register
-// Services that set via Init(...services) are always registered (regardless of Enabled() function)
-/// and have preference over services registered from bus.Register
+// Init initializes the bus services registered through Register.
+// Services passed directly are always initialized and take precedence over
+// services registered through Register.
 func Init(forcedServices ...Service) []Service {
 	initializedServices := make([]Service, 0)
 	for _, svc := range forcedServices {
@@ -172,7 +172,7 @@ func GetCallCount(msg Msg) int {
 
 func getKey(msg Msg) string {
 	typeof := reflect.TypeOf(msg)
-	if typeof.Kind() != reflect.Ptr {
+	if typeof.Kind() != reflect.Pointer {
 		panic(fmt.Errorf("'%s' is not a pointer", keyForElement(typeof)))
 	}
 

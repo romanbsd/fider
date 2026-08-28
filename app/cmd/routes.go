@@ -84,6 +84,7 @@ func routes(r *web.Engine) *web.Engine {
 		{
 			widget.Use(middlewares.WidgetCORS())
 			widget.Use(middlewares.WidgetRateLimit())
+			widget.Use(middlewares.WidgetAppCheck())
 			widget.Use(middlewares.WidgetAuth())
 			widget.Options(app.MobileSignInPath, apiv1.MobileSignIn())
 			widget.Options(app.MobileSignOutPath, apiv1.MobileSignOut())
@@ -257,6 +258,7 @@ func routes(r *web.Engine) *web.Engine {
 		if env.Config.Widget.Enabled {
 			publicApi.Use(middlewares.WidgetCORS())
 		}
+		publicApi.Use(middlewares.AppCheck())
 
 		publicApi.Get("/api/v1/similarposts", apiv1.FindSimilarPosts())
 		publicApi.Get("/api/v1/posts", apiv1.SearchPosts())
@@ -280,6 +282,9 @@ func routes(r *web.Engine) *web.Engine {
 			// authenticated surface stays same-origin-only.
 			membersApi.Use(middlewares.MobileApiCORS())
 		}
+		// Runs after MobileApiCORS so a rejection response still carries CORS
+		// headers for cross-origin mobile clients (see docs/MOBILE_FEEDBACK_API.md).
+		membersApi.Use(middlewares.AppCheck())
 		membersApi.Use(middlewares.BlockLockedTenants())
 
 		membersApi.Post("/api/v1/posts", apiv1.CreatePost())
@@ -332,6 +337,7 @@ func routes(r *web.Engine) *web.Engine {
 	{
 		staffApi.Use(middlewares.SetLocale("en"))
 		staffApi.Use(middlewares.IsAuthenticated())
+		staffApi.Use(middlewares.AppCheck())
 		staffApi.Use(middlewares.IsAuthorized(enum.RoleCollaborator, enum.RoleAdministrator))
 
 		staffApi.Get("/api/v1/users", apiv1.ListUsers())
@@ -349,6 +355,7 @@ func routes(r *web.Engine) *web.Engine {
 	{
 		adminApi.Use(middlewares.SetLocale("en"))
 		adminApi.Use(middlewares.IsAuthenticated())
+		adminApi.Use(middlewares.AppCheck())
 		adminApi.Use(middlewares.IsAuthorized(enum.RoleAdministrator))
 
 		adminApi.Post("/api/v1/users", apiv1.CreateUser())

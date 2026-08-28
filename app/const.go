@@ -39,6 +39,7 @@ const (
 var (
 	RequestCtxKey     = createKey("REQUEST")
 	MobileApiCtxKey   = createKey("MOBILE_API")
+	AppCheckCtxKey    = createKey("APP_CHECK")
 	TransactionCtxKey = createKey("TRANSACTION")
 	TenantCtxKey      = createKey("TENANT")
 	LocaleCtxKey      = createKey("LOCALE")

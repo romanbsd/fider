@@ -10,11 +10,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	stderrors "errors"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/getfider/fider/app"
 
 	"github.com/getfider/fider/app/models/cmd"
@@ -29,7 +32,7 @@ import (
 )
 
 // DefaultClient is an S3 Client
-var DefaultClient *s3.S3
+var DefaultClient *s3.Client
 
 func init() {
 	bus.Register(Service{})
@@ -52,19 +55,22 @@ func (s Service) Enabled() bool {
 func (s Service) Init() {
 	s3EnvConfig := env.Config.BlobStorage.S3
 	if s3EnvConfig.EndpointURL != "" {
-		s3Config := &aws.Config{
-			Credentials:      credentials.NewStaticCredentials(s3EnvConfig.AccessKeyID, s3EnvConfig.SecretAccessKey, ""),
-			Endpoint:         aws.String(s3EnvConfig.EndpointURL),
-			Region:           aws.String(s3EnvConfig.Region),
-			DisableSSL:       aws.Bool(strings.HasSuffix(s3EnvConfig.EndpointURL, "http://")),
-			S3ForcePathStyle: aws.Bool(true),
-		}
-		awsSession, err := session.NewSession(s3Config)
+		awsConfig, err := config.LoadDefaultConfig(context.Background(),
+			config.WithRegion(s3EnvConfig.Region),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+				s3EnvConfig.AccessKeyID,
+				s3EnvConfig.SecretAccessKey,
+				"",
+			)),
+		)
 		if err != nil {
 			panic(err)
 		}
 
-		DefaultClient = s3.New(awsSession)
+		DefaultClient = s3.NewFromConfig(awsConfig, func(options *s3.Options) {
+			options.BaseEndpoint = aws.String(s3EnvConfig.EndpointURL)
+			options.UsePathStyle = true
+		})
 	}
 
 	bus.AddHandler(listBlobs)
@@ -75,9 +81,9 @@ func (s Service) Init() {
 
 func listBlobs(ctx context.Context, q *query.ListBlobs) error {
 	prefix := basePath(ctx, q.Prefix)
-	response, err := DefaultClient.ListObjectsWithContext(ctx, &s3.ListObjectsInput{
+	response, err := DefaultClient.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:  aws.String(env.Config.BlobStorage.S3.BucketName),
-		MaxKeys: aws.Int64(1000),
+		MaxKeys: aws.Int32(1000),
 		Prefix:  aws.String(prefix),
 	})
 	if err != nil {
@@ -111,7 +117,7 @@ func getBlobByKey(ctx context.Context, q *query.GetBlobByKey) error {
 		return wrap(err, "failed to validate blob key '%s'", q.Key)
 	}
 
-	resp, err := DefaultClient.GetObjectWithContext(ctx, &s3.GetObjectInput{
+	resp, err := DefaultClient.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(env.Config.BlobStorage.S3.BucketName),
 		Key:    aws.String(keyFullPathURL(ctx, q.Key)),
 	})
@@ -142,11 +148,11 @@ func storeBlob(ctx context.Context, c *cmd.StoreBlob) error {
 	}
 
 	reader := bytes.NewReader(c.Content)
-	_, err := DefaultClient.PutObjectWithContext(ctx, &s3.PutObjectInput{
+	_, err := DefaultClient.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(env.Config.BlobStorage.S3.BucketName),
 		Key:         aws.String(keyFullPathURL(ctx, c.Key)),
 		ContentType: aws.String(c.ContentType),
-		ACL:         aws.String(s3.ObjectCannedACLPrivate),
+		ACL:         types.ObjectCannedACLPrivate,
 		Body:        reader,
 	})
 	if err != nil {
@@ -156,7 +162,7 @@ func storeBlob(ctx context.Context, c *cmd.StoreBlob) error {
 }
 
 func deleteBlob(ctx context.Context, c *cmd.DeleteBlob) error {
-	_, err := DefaultClient.DeleteObjectWithContext(ctx, &s3.DeleteObjectInput{
+	_, err := DefaultClient.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(env.Config.BlobStorage.S3.BucketName),
 		Key:    aws.String(keyFullPathURL(ctx, c.Key)),
 	})
@@ -181,15 +187,10 @@ func basePath(ctx context.Context, segment string) string {
 }
 
 func isNotFound(err error) bool {
-	if awsErr, ok := err.(awserr.Error); ok {
-		return awsErr.Code() == s3.ErrCodeNoSuchKey
-	}
-	return false
+	var apiErr smithy.APIError
+	return stderrors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey"
 }
 
 func wrap(err error, format string, a ...any) error {
-	if awsErr, ok := err.(awserr.Error); ok {
-		return errors.Wrap(awsErr.OrigErr(), format, a...)
-	}
 	return errors.Wrap(err, format, a...)
 }

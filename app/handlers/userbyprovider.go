@@ -52,15 +52,16 @@ func RequireProviderAdmission(tenant *entity.Tenant, existing *entity.User, trus
 // RegisterUserByProvider links an already-resolved identity-provider user to
 // Fider. Callers must use FindUserByProviderOrEmail first, which avoids
 // repeating the provider/email lookup after authorization is decided.
-func RegisterUserByProvider(c *web.Context, tenant *entity.Tenant, existing *entity.User, provider, uid, name, email string) (*entity.User, error) {
+func RegisterUserByProvider(c *web.Context, tenant *entity.Tenant, existing *entity.User, provider, uid, name, email string, nameIsPlaceholder bool) (*entity.User, error) {
 	user := existing
 	if user == nil {
 		user = &entity.User{
-			Tenant:    tenant,
-			Name:      name,
-			Email:     email,
-			Role:      enum.RoleVisitor,
-			Providers: []*entity.UserProvider{{UID: uid, Name: provider}},
+			Tenant:            tenant,
+			Name:              name,
+			Email:             email,
+			Role:              enum.RoleVisitor,
+			Providers:         []*entity.UserProvider{{UID: uid, Name: provider}},
+			NameIsPlaceholder: nameIsPlaceholder,
 		}
 		if err := bus.Dispatch(c, &cmd.RegisterUser{User: user}); err != nil {
 			return nil, err

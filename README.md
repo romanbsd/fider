@@ -47,6 +47,15 @@ browser session: the app exchanges an OIDC `id_token` for a 24-hour API JWT at
 `Authorization: Bearer <jwt>`. Full API spec:
 [docs/MOBILE_FEEDBACK_API.md](docs/MOBILE_FEEDBACK_API.md).
 
+As an opt-in alternative, Firebase-enabled clients can use App Check plus a
+Firebase Auth ID token. This supports automatic anonymous accounts whose
+Firebase UID remains stable when the account is later linked to Google or
+Apple. Direct OIDC remains the default while App Check is `off` or `monitor`.
+Before switching App Check to `enforce`, migrate every direct-OIDC client to
+send a valid `X-Firebase-AppCheck` token on `/widget/signin` and every subsequent
+mobile API request; there is no App-Check-free compatibility path in enforce
+mode.
+
 ## Enabling mobile sign-in
 
 Add at least one provider block to your environment (`.env` / `/etc/fider/fider.env`) and restart the service:
@@ -55,6 +64,14 @@ Add at least one provider block to your environment (`.env` / `/etc/fider/fider.
 # Mobile API
 WIDGET_ENABLED=true
 WIDGET_RATE_LIMIT=120
+
+# Firebase App Check + Auth (optional; one Firebase project per deployment)
+FIREBASE_PROJECT_ID=example-project
+# Numeric project number from Firebase Project Settings -> General
+FIREBASE_PROJECT_NUMBER=1234567890
+# Firebase App IDs, not Android package names or Apple bundle IDs
+FIREBASE_APP_IDS=1:1234567890:android:abc123,1:1234567890:ios:def456
+APP_CHECK_MODE=monitor # off, monitor, or enforce
 
 # Google Sign-In (optional)
 WIDGET_IDTOKEN_GOOGLE_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs
@@ -74,6 +91,14 @@ Google and Apple can be configured at the same time; the server tries each
 configured provider until one verifies the presented id_token. A user who signs
 in through mobile is linked to the same account as the regular OAuth flow for
 that provider.
+
+Firebase verification uses Google's public signing keys and does not require a
+service account or Application Default Credentials. Start App Check in
+`monitor`, release an attested client, and switch to `enforce` only after the
+missing-token metric is acceptably low. Firebase provisioning itself always
+requires valid App Check, including while legacy traffic is only monitored.
+In `enforce` mode, App Check also applies to direct-OIDC sign-in and to all API
+requests authenticated by the resulting mobile JWT.
 
 ## Setting up a provider
 
