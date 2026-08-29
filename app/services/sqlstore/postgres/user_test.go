@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getfider/fider/app/models/dto"
 	"github.com/getfider/fider/app/models/entity"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/getfider/fider/app/models/cmd"
 	"github.com/getfider/fider/app/pkg/bus"
+	"github.com/getfider/fider/app/pkg/dbx"
 
 	"github.com/getfider/fider/app"
 	. "github.com/getfider/fider/app/pkg/assert"
@@ -149,6 +151,136 @@ func TestUserStorage_Register(t *testing.T) {
 	Expect(getUser.Result.Name).Equals("Rob Stark")
 	Expect(getUser.Result.Email).Equals("rob.stark@got.com")
 	Expect(getUser.Result.Status).Equals(enum.UserActive)
+}
+
+func TestUserStorage_HydrateAnonymousFirebaseIdentity(t *testing.T) {
+	SetupDatabaseTest(t)
+	defer TeardownDatabaseTest()
+
+	user := &entity.User{
+		Name:              "Anonymous",
+		NameIsPlaceholder: true,
+		Email:             "",
+		Role:              enum.RoleVisitor,
+		Providers: []*entity.UserProvider{{
+			UID:  "firebase-hydrate-1",
+			Name: "firebase",
+		}},
+	}
+	Expect(bus.Dispatch(demoTenantCtx, &cmd.RegisterUser{User: user})).IsNil()
+
+	hydrate := &cmd.HydrateUserIdentity{
+		UserID: user.ID,
+		Name:   "Arya Stark",
+		Email:  "FIREBASE.USER@GOT.COM",
+	}
+	Expect(bus.Dispatch(demoTenantCtx, hydrate)).IsNil()
+	Expect(hydrate.Result.Name).Equals("Arya Stark")
+	Expect(hydrate.Result.Email).Equals("firebase.user@got.com")
+
+	lookup := &query.GetUserByProvider{Provider: "firebase", UID: "firebase-hydrate-1"}
+	Expect(bus.Dispatch(demoTenantCtx, lookup)).IsNil()
+	Expect(lookup.Result.ID).Equals(user.ID)
+	Expect(lookup.Result.Name).Equals("Arya Stark")
+	Expect(lookup.Result.Email).Equals("firebase.user@got.com")
+}
+
+func TestUserStorage_FirebaseIdentityIsUniqueWithinTenant(t *testing.T) {
+	SetupDatabaseTest(t)
+	defer TeardownDatabaseTest()
+
+	const firebaseUID = "firebase-shared-uid"
+	Expect(bus.Dispatch(demoTenantCtx, &cmd.RegisterUserProvider{
+		UserID:       jonSnow.ID,
+		ProviderName: "firebase",
+		ProviderUID:  firebaseUID,
+	})).IsNil()
+	Expect(bus.Dispatch(avengersTenantCtx, &cmd.RegisterUserProvider{
+		UserID:       tonyStark.ID,
+		ProviderName: "firebase",
+		ProviderUID:  firebaseUID,
+	})).IsNil()
+
+	err := bus.Dispatch(demoTenantCtx, &cmd.RegisterUserProvider{
+		UserID:       aryaStark.ID,
+		ProviderName: "firebase",
+		ProviderUID:  firebaseUID,
+	})
+	Expect(err).IsNotNil()
+}
+
+func TestUserStorage_LockUserProviderIdentitySerializesProvisioning(t *testing.T) {
+	ctx := SetupDatabaseTest(t)
+	defer TeardownDatabaseTest()
+
+	first, err := dbx.BeginTx(ctx)
+	Expect(err).IsNil()
+	defer first.MustRollback()
+	second, err := dbx.BeginTx(ctx)
+	Expect(err).IsNil()
+	defer second.MustRollback()
+
+	firstCtx := context.WithValue(context.WithValue(ctx, app.TransactionCtxKey, first), app.TenantCtxKey, demoTenant)
+	secondCtx := context.WithValue(context.WithValue(ctx, app.TransactionCtxKey, second), app.TenantCtxKey, demoTenant)
+	lock := func() *cmd.LockUserProviderIdentity {
+		return &cmd.LockUserProviderIdentity{ProviderName: "firebase", ProviderUID: "firebase-concurrent-uid"}
+	}
+	Expect(bus.Dispatch(firstCtx, lock())).IsNil()
+
+	done := make(chan error, 1)
+	go func() { done <- bus.Dispatch(secondCtx, lock()) }()
+	select {
+	case lockErr := <-done:
+		t.Fatalf("second provisioning lock returned before the first transaction ended: %v", lockErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	Expect(first.Commit()).IsNil()
+	select {
+	case lockErr := <-done:
+		Expect(lockErr).IsNil()
+	case <-time.After(2 * time.Second):
+		t.Fatal("second provisioning lock remained blocked after the first transaction committed")
+	}
+}
+
+func TestUserStorage_LockUserProviderIdentitySerializesByVerifiedEmail(t *testing.T) {
+	ctx := SetupDatabaseTest(t)
+	defer TeardownDatabaseTest()
+
+	first, err := dbx.BeginTx(ctx)
+	Expect(err).IsNil()
+	defer first.MustRollback()
+	second, err := dbx.BeginTx(ctx)
+	Expect(err).IsNil()
+	defer second.MustRollback()
+
+	firstCtx := context.WithValue(context.WithValue(ctx, app.TransactionCtxKey, first), app.TenantCtxKey, demoTenant)
+	secondCtx := context.WithValue(context.WithValue(ctx, app.TransactionCtxKey, second), app.TenantCtxKey, demoTenant)
+	lock := func() *cmd.LockUserProviderIdentity {
+		return &cmd.LockUserProviderIdentity{
+			ProviderName: "firebase",
+			ProviderUID:  "firebase-uid-a",
+			Email:        "SHARED@GOT.COM",
+		}
+	}
+	Expect(bus.Dispatch(firstCtx, lock())).IsNil()
+
+	done := make(chan error, 1)
+	go func() { done <- bus.Dispatch(secondCtx, lock()) }()
+	select {
+	case lockErr := <-done:
+		t.Fatalf("second email lock returned before the first transaction ended: %v", lockErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	Expect(first.Commit()).IsNil()
+	select {
+	case lockErr := <-done:
+		Expect(lockErr).IsNil()
+	case <-time.After(2 * time.Second):
+		t.Fatal("second email lock remained blocked after the first transaction committed")
+	}
 }
 
 func TestUserStorage_Register_WhiteSpaceEmail(t *testing.T) {

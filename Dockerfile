@@ -3,7 +3,7 @@
 #####################
 ### Server Build Step
 #####################
-FROM --platform=${TARGETPLATFORM:-linux/amd64} golang:1.25-bookworm AS server-builder
+FROM --platform=${TARGETPLATFORM:-linux/amd64} golang:1.27-trixie AS server-builder
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 #################
 ### UI Build Step
 #################
-FROM --platform=${TARGETPLATFORM:-linux/amd64} node:22-bookworm AS ui-builder 
+FROM --platform=${TARGETPLATFORM:-linux/amd64} node:22-trixie AS ui-builder
 
 WORKDIR /ui
 
@@ -42,7 +42,7 @@ RUN make build-ui
 ################
 ### Runtime Step
 ################
-FROM --platform=${TARGETPLATFORM:-linux/amd64} debian:bookworm-slim
+FROM --platform=${TARGETPLATFORM:-linux/amd64} debian:trixie-slim
 
 RUN apt-get update && apt-get install -y ca-certificates
 

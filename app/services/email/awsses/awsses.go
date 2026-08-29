@@ -3,10 +3,11 @@ package awsses
 import (
 	"context"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	ses "github.com/aws/aws-sdk-go/service/sesv2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/models/cmd"
 	"github.com/getfider/fider/app/models/dto"
@@ -19,7 +20,7 @@ import (
 	"github.com/getfider/fider/app/services/email"
 )
 
-var sesClient *ses.SESV2
+var sesClient *sesv2.Client
 
 func init() {
 	bus.Register(Service{})
@@ -41,16 +42,19 @@ func (s Service) Enabled() bool {
 
 func (s Service) Init() {
 	sesEnvConfig := env.Config.Email.AWSSES
-	sesConfig := &aws.Config{
-		Credentials: credentials.NewStaticCredentials(sesEnvConfig.AccessKeyID, sesEnvConfig.SecretAccessKey, ""),
-		Region:      aws.String(sesEnvConfig.Region),
-	}
-	awsSession, err := session.NewSession(sesConfig)
+	awsConfig, err := config.LoadDefaultConfig(context.Background(),
+		config.WithRegion(sesEnvConfig.Region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			sesEnvConfig.AccessKeyID,
+			sesEnvConfig.SecretAccessKey,
+			"",
+		)),
+	)
 	if err != nil {
 		panic(err)
 	}
 
-	sesClient = ses.New(awsSession)
+	sesClient = sesv2.NewFromConfig(awsConfig)
 	bus.AddListener(sendMail)
 	bus.AddHandler(fetchRecentSupressions)
 }
@@ -84,31 +88,29 @@ func sendMail(ctx context.Context, c *cmd.SendMail) {
 		})
 
 		message := email.RenderMessage(ctx, c.TemplateName, c.From.Address, c.Props.Merge(to.Props))
-		tags := []*ses.MessageTag{
+		tags := []types.MessageTag{
 			{Name: aws.String("template"), Value: aws.String(c.TemplateName)},
 		}
 
 		tenant, ok := ctx.Value(app.TenantCtxKey).(*entity.Tenant)
 		if ok && !env.IsSingleHostMode() {
-			tags = append(tags, &ses.MessageTag{Name: aws.String("tenant"), Value: aws.String(tenant.Subdomain)})
+			tags = append(tags, types.MessageTag{Name: aws.String("tenant"), Value: aws.String(tenant.Subdomain)})
 		}
 
-		input := &ses.SendEmailInput{
+		input := &sesv2.SendEmailInput{
 			FromEmailAddress: aws.String(c.From.String()),
-			Destination: &ses.Destination{
-				ToAddresses: []*string{
-					aws.String(to.String()),
-				},
+			Destination: &types.Destination{
+				ToAddresses: []string{to.String()},
 			},
-			Content: &ses.EmailContent{
-				Simple: &ses.Message{
-					Body: &ses.Body{
-						Html: &ses.Content{
+			Content: &types.EmailContent{
+				Simple: &types.Message{
+					Body: &types.Body{
+						Html: &types.Content{
 							Charset: aws.String("UTF-8"),
 							Data:    aws.String(message.Body),
 						},
 					},
-					Subject: &ses.Content{
+					Subject: &types.Content{
 						Charset: aws.String("UTF-8"),
 						Data:    aws.String(email.EncodeSubject(message.Subject)),
 					},
@@ -117,7 +119,7 @@ func sendMail(ctx context.Context, c *cmd.SendMail) {
 			EmailTags: tags,
 		}
 
-		result, err := sesClient.SendEmailWithContext(ctx, input)
+		result, err := sesClient.SendEmail(ctx, input)
 		if err != nil {
 			panic(errors.Wrap(err, "failed to send email with template %s", c.TemplateName))
 		}
@@ -129,9 +131,9 @@ func sendMail(ctx context.Context, c *cmd.SendMail) {
 }
 
 func fetchRecentSupressions(ctx context.Context, q *query.FetchRecentSupressions) error {
-	response, err := sesClient.ListSuppressedDestinationsWithContext(ctx, &ses.ListSuppressedDestinationsInput{
+	response, err := sesClient.ListSuppressedDestinations(ctx, &sesv2.ListSuppressedDestinationsInput{
 		StartDate: aws.Time(q.StartTime),
-		PageSize:  aws.Int64(1000),
+		PageSize:  aws.Int32(1000),
 	})
 	if err != nil {
 		return errors.Wrap(err, "failed to list supressed destinations")

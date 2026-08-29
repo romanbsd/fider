@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/getfider/fider/app/pkg/errors"
+	"github.com/getfider/fider/app/pkg/publickeys"
 	jwtgo "github.com/golang-jwt/jwt/v4"
 
 	. "github.com/getfider/fider/app/pkg/assert"
@@ -23,6 +24,15 @@ const (
 	testAudience = "client-123"
 	testKid      = "key-1"
 )
+
+type testJWK struct {
+	Kty string `json:"kty"`
+	Kid string `json:"kid"`
+	Use string `json:"use"`
+	Alg string `json:"alg"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
 
 func generateTestKeys() (*rsa.PrivateKey, *rsa.PublicKey) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -38,9 +48,9 @@ func jwksHandler(pub *rsa.PublicKey) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(struct {
-			Keys []jwk `json:"keys"`
+			Keys []testJWK `json:"keys"`
 		}{
-			Keys: []jwk{
+			Keys: []testJWK{
 				{Kty: "RSA", Kid: testKid, Use: "sig", Alg: "RS256", N: modulus, E: exponent},
 			},
 		})
@@ -248,16 +258,16 @@ func TestValidator_KeyRotation(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 
-		encoded := make([]jwk, 0, len(keys))
+		encoded := make([]testJWK, 0, len(keys))
 		for kid, pub := range keys {
-			encoded = append(encoded, jwk{
+			encoded = append(encoded, testJWK{
 				Kty: "RSA", Kid: kid, Use: "sig", Alg: "RS256",
 				N: base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
 				E: base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
 			})
 		}
 		_ = json.NewEncoder(w).Encode(struct {
-			Keys []jwk `json:"keys"`
+			Keys []testJWK `json:"keys"`
 		}{Keys: encoded})
 	}))
 	t.Cleanup(server.Close)
@@ -315,7 +325,14 @@ func TestValidator_RefreshFailure_FailsClosed(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	validator := New(Config{JWKSURL: server.URL, Issuer: testIssuer, ClientID: testAudience})
+	now := time.Now()
+	validator := &Validator{
+		cfg: Config{JWKSURL: server.URL, Issuer: testIssuer, ClientID: testAudience},
+		keys: publickeys.NewJWKS(server.URL, publickeys.Options{
+			FixedTTL: keySetTTL,
+			Now:      func() time.Time { return now },
+		}),
+	}
 	signed := signToken(priv, nil)
 
 	// initial fetch works
@@ -324,7 +341,7 @@ func TestValidator_RefreshFailure_FailsClosed(t *testing.T) {
 
 	// past the key-set TTL the validator must refresh; a failing refresh must
 	// fail closed rather than keep trusting the cached (possibly rotated-away) key
-	validator.lastLoad = time.Now().Add(-2 * keySetTTL)
+	now = now.Add(2 * keySetTTL)
 	down = true
 
 	_, err = validator.Verify(context.Background(), signed)

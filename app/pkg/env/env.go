@@ -148,7 +148,13 @@ type config struct {
 	Widget struct {
 		Enabled   bool `env:"WIDGET_ENABLED,default=true"`
 		RateLimit int  `env:"WIDGET_RATE_LIMIT,default=120,strict"`
-		IdToken   struct {
+		Firebase  struct {
+			ProjectID     string `env:"FIREBASE_PROJECT_ID"`
+			ProjectNumber string `env:"FIREBASE_PROJECT_NUMBER"`
+			AppIDs        string `env:"FIREBASE_APP_IDS"`
+			AppCheckMode  string `env:"APP_CHECK_MODE,default=off"`
+		}
+		IdToken struct {
 			Google struct {
 				JWKSURL  string `env:"WIDGET_IDTOKEN_GOOGLE_JWKS_URL"`
 				Issuer   string `env:"WIDGET_IDTOKEN_GOOGLE_ISSUER"`

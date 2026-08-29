@@ -225,6 +225,11 @@ func (c *Context) Unauthorized() error {
 	})
 }
 
+// UnauthorizedJSON returns a 401 with a JSON error body, for API clients.
+func (c *Context) UnauthorizedJSON() error {
+	return c.JSON(http.StatusUnauthorized, Map{"error": "Unauthorized"})
+}
+
 // Forbidden returns a 403 error response
 func (c *Context) Forbidden() error {
 	if c.IsAjax() {

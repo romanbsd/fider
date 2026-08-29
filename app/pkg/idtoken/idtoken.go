@@ -2,18 +2,12 @@ package idtoken
 
 import (
 	"context"
-	"crypto/rsa"
-	"encoding/base64"
-	"encoding/json"
-	"math/big"
-	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/getfider/fider/app/pkg/errors"
+	"github.com/getfider/fider/app/pkg/publickeys"
 	jwtgo "github.com/golang-jwt/jwt/v4"
-	"golang.org/x/sync/singleflight"
 )
 
 // Claims are the claims expected from an Identity Provider ID token
@@ -31,19 +25,6 @@ type Config struct {
 	ClientID string
 }
 
-type jwk struct {
-	Kty string `json:"kty"`
-	Kid string `json:"kid"`
-	Use string `json:"use"`
-	Alg string `json:"alg"`
-	N   string `json:"n"`
-	E   string `json:"e"`
-}
-
-type jwks struct {
-	Keys []jwk `json:"keys"`
-}
-
 // keySetTTL bounds how long a fetched JWKS is trusted before the provider key
 // set is refreshed.
 const keySetTTL = time.Hour
@@ -53,20 +34,18 @@ const keySetTTL = time.Hour
 // references an unknown key, so provider key rotation is picked up without a
 // process restart.
 type Validator struct {
-	cfg      Config
-	client   *http.Client
-	mu       sync.Mutex
-	keys     map[string]*rsa.PublicKey
-	lastLoad time.Time
-	sf       singleflight.Group
+	cfg  Config
+	keys *publickeys.Source
 }
 
 // New creates a Validator for the given provider configuration
 func New(cfg Config) *Validator {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
+	return &Validator{
+		cfg: cfg,
+		keys: publickeys.NewJWKS(cfg.JWKSURL, publickeys.Options{
+			FixedTTL: keySetTTL,
+		}),
 	}
-	return &Validator{cfg: cfg, client: client, keys: make(map[string]*rsa.PublicKey)}
 }
 
 // IsConfigured returns true when the provider settings required for validation are present
@@ -163,112 +142,10 @@ func jwkKid(t *jwtgo.Token) string {
 	return kid
 }
 
-func (v *Validator) getKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
-	// Serve from cache while the key set is fresh. Read under lock, but the
-	// lock is released before any network call: holding it across fetchKeys
-	// would serialize every request behind a single 10s HTTP timeout, letting
-	// an unauthenticated caller submitting tokens with unknown kids stall
-	// every other in-flight sign-in (including other tenants').
-	v.mu.Lock()
-	key, ok := v.keys[kid]
-	fresh := ok && time.Since(v.lastLoad) < keySetTTL
-	v.mu.Unlock()
-	if fresh {
-		return key, nil
-	}
-
-	// Refresh on an unknown kid or a stale key set so provider key rotation is
-	// picked up without a restart. The key set is replaced only after a
-	// successful fetch, so removed keys stop validating tokens. A failed refresh
-	// fails closed: a stale key is never served past its TTL. Concurrent
-	// refreshes are coalesced into a single in-flight fetch instead of each
-	// caller hitting the JWKS endpoint independently.
-	//
-	// The fetch runs with context.Background(), not the caller's ctx: whichever
-	// caller happens to be the singleflight leader is otherwise arbitrary, and
-	// cancelling *that one's* request (e.g. a disconnected client) would abort
-	// the shared fetch and fail every other coalesced caller too, including
-	// unrelated tenants' sign-ins. The client's own 10s timeout still bounds it.
-	if _, err, _ := v.sf.Do("fetch", func() (any, error) {
-		return nil, v.fetchKeys(context.Background())
-	}); err != nil {
-		return nil, err
-	}
-
-	v.mu.Lock()
-	key, ok = v.keys[kid]
-	v.mu.Unlock()
-	if ok {
-		return key, nil
-	}
-	return nil, errors.New("identity provider keyset does not contain a key matching '%s'", kid)
-}
-
-func (v *Validator) fetchKeys(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.cfg.JWKSURL, nil)
+func (v *Validator) getKey(ctx context.Context, kid string) (any, error) {
+	key, err := v.keys.Key(ctx, kid)
 	if err != nil {
-		return errors.Wrap(err, "failed to build keyset request")
+		return nil, errors.Wrap(err, "identity provider keyset lookup failed")
 	}
-
-	resp, err := v.client.Do(req)
-	if err != nil {
-		return errors.Wrap(err, "failed to fetch identity provider keyset")
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return errors.New("failed to fetch identity provider keyset: unexpected status code %d", resp.StatusCode)
-	}
-
-	var set jwks
-	if err := json.NewDecoder(resp.Body).Decode(&set); err != nil {
-		return errors.Wrap(err, "failed to parse identity provider keyset")
-	}
-
-	fresh := make(map[string]*rsa.PublicKey, len(set.Keys))
-	for _, key := range set.Keys {
-		if key.Kty != "RSA" || key.Use != "sig" {
-			continue
-		}
-
-		pub, err := decodeRSAPublicKey(key)
-		if err != nil {
-			continue
-		}
-		fresh[key.Kid] = pub
-	}
-
-	if len(fresh) == 0 {
-		return errors.New("identity provider keyset did not contain any usable keys")
-	}
-
-	v.mu.Lock()
-	v.keys = fresh
-	v.lastLoad = time.Now()
-	v.mu.Unlock()
-	return nil
-}
-
-func decodeRSAPublicKey(key jwk) (*rsa.PublicKey, error) {
-	modulus, err := base64.RawURLEncoding.DecodeString(key.N)
-	if err != nil {
-		return nil, err
-	}
-	exponent, err := base64.RawURLEncoding.DecodeString(key.E)
-	if err != nil {
-		return nil, err
-	}
-	if len(exponent) == 0 {
-		return nil, errors.New("empty RSA exponent")
-	}
-
-	exp := 0
-	for _, b := range exponent {
-		exp = exp<<8 | int(b)
-	}
-
-	return &rsa.PublicKey{
-		N: new(big.Int).SetBytes(modulus),
-		E: exp,
-	}, nil
+	return key, nil
 }

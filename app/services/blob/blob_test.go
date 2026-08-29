@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	awss3 "github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/getfider/fider/app"
 	"github.com/getfider/fider/app/models/cmd"
 	"github.com/getfider/fider/app/models/entity"
@@ -34,7 +34,7 @@ func setupS3(t *testing.T) {
 	bus.Init(s3.Service{})
 
 	bucket := aws.String(env.Config.BlobStorage.S3.BucketName)
-	_, _ = s3.DefaultClient.CreateBucket(&awss3.CreateBucketInput{
+	_, _ = s3.DefaultClient.CreateBucket(context.Background(), &awss3.CreateBucketInput{
 		Bucket: bucket,
 	})
 }

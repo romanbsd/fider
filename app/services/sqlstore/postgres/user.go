@@ -26,13 +26,13 @@ func generateSecurityStamp() string {
 }
 
 // insertUser inserts a new user row.
-func insertUser(trx *dbx.Trx, tenant *entity.Tenant, name, email string, role enum.Role) (id int, securityStamp string, err error) {
+func insertUser(trx *dbx.Trx, tenant *entity.Tenant, name, email string, role enum.Role, nameIsPlaceholder bool) (id int, securityStamp string, err error) {
 	stamp := generateSecurityStamp()
 	now := time.Now()
 	err = trx.Get(&id, `INSERT INTO users
-		(name, email, created_at, tenant_id, role, status, avatar_type, avatar_bkey, security_stamp)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8) RETURNING id`,
-		name, email, now, tenant.ID, role, enum.UserActive, enum.AvatarTypeGravatar, stamp)
+		(name, email, created_at, tenant_id, role, status, avatar_type, avatar_bkey, security_stamp, name_is_placeholder)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8, $9) RETURNING id`,
+		name, email, now, tenant.ID, role, enum.UserActive, enum.AvatarTypeGravatar, stamp, nameIsPlaceholder)
 
 	if err != nil {
 		if pqErr, ok := errors.Cause(err).(*pq.Error); ok && pqErr.Constraint == "user_email_unique_idx" {
@@ -263,7 +263,7 @@ func registerUser(ctx context.Context, c *cmd.RegisterUser) error {
 		c.User.Status = enum.UserActive
 		c.User.Email = strings.ToLower(strings.TrimSpace(c.User.Email))
 
-		id, stamp, err := insertUser(trx, tenant, c.User.Name, c.User.Email, c.User.Role)
+		id, stamp, err := insertUser(trx, tenant, c.User.Name, c.User.Email, c.User.Role, c.User.NameIsPlaceholder)
 		if err != nil {
 			return errors.Wrap(err, "failed to register new user")
 		}
@@ -288,6 +288,67 @@ func registerUserProvider(ctx context.Context, c *cmd.RegisterUserProvider) erro
 		if err != nil {
 			return errors.Wrap(err, "failed to add provider '%s:%s' to user with id '%d'", c.ProviderName, c.ProviderUID, c.UserID)
 		}
+		return nil
+	})
+}
+
+func lockUserProviderIdentity(ctx context.Context, c *cmd.LockUserProviderIdentity) error {
+	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, _ *entity.User) error {
+		keys := []string{fmt.Sprintf("%d:%s:%s", tenant.ID, c.ProviderName, c.ProviderUID)}
+		if email := strings.ToLower(strings.TrimSpace(c.Email)); email != "" {
+			// Serialize by verified email too: two different provider UIDs
+			// sharing one email must not race on the same Fider user (unique
+			// email index / provider-UID index).
+			keys = append(keys, fmt.Sprintf("%d:email:%s", tenant.ID, email))
+		}
+		for _, key := range keys {
+			if _, err := trx.Execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key); err != nil {
+				return errors.Wrap(err, "failed to lock provider identity")
+			}
+		}
+		return nil
+	})
+}
+
+func hydrateUserIdentity(ctx context.Context, c *cmd.HydrateUserIdentity) error {
+	return using(ctx, func(trx *dbx.Trx, tenant *entity.Tenant, _ *entity.User) error {
+		name := strings.TrimSpace(c.Name)
+		email := strings.ToLower(strings.TrimSpace(c.Email))
+		result, err := queryUser(ctx, trx, `id = $1 AND tenant_id = $2`, c.UserID, tenant.ID)
+		if err != nil {
+			return errors.Wrap(err, "failed to load user before identity hydration")
+		}
+
+		changed := false
+		if (result.Name == "" || result.NameIsPlaceholder) && name != "" {
+			result.Name = name
+			result.NameIsPlaceholder = false
+			changed = true
+		}
+		if result.Email == "" && email != "" {
+			// Locked under the same advisory-lock key signInByIDToken/
+			// signInByFirebaseIDToken take via cmd.LockUserProviderIdentity, so
+			// this COUNT-then-UPDATE can't race a concurrent registration
+			// claiming the same email between the two statements.
+			if _, err := trx.Execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", fmt.Sprintf("%d:email:%s", tenant.ID, email)); err != nil {
+				return errors.Wrap(err, "failed to lock identity email")
+			}
+			var count int
+			if err := trx.Scalar(&count, "SELECT COUNT(*) FROM users WHERE tenant_id = $1 AND email = $2 AND id <> $3", tenant.ID, email, c.UserID); err != nil {
+				return errors.Wrap(err, "failed to check identity email availability")
+			}
+			if count == 0 {
+				result.Email = email
+				changed = true
+			}
+		}
+
+		if changed {
+			if _, err := trx.Execute("UPDATE users SET name = $3, email = $4, name_is_placeholder = $5 WHERE id = $1 AND tenant_id = $2", c.UserID, tenant.ID, result.Name, result.Email, result.NameIsPlaceholder); err != nil {
+				return errors.Wrap(err, "failed to hydrate user identity")
+			}
+		}
+		c.Result = result
 		return nil
 	})
 }
@@ -397,7 +458,7 @@ func getAllUsersNames(ctx context.Context, q *query.GetAllUsersNames) error {
 
 func queryUser(ctx context.Context, trx *dbx.Trx, filter string, args ...any) (*entity.User, error) {
 	user := dbEntities.User{}
-	sql := fmt.Sprintf("SELECT id, name, email, tenant_id, role, status, avatar_type, avatar_bkey, is_trusted, security_stamp FROM users WHERE status != %d AND ", enum.UserDeleted)
+	sql := fmt.Sprintf("SELECT id, name, email, tenant_id, role, status, avatar_type, avatar_bkey, is_trusted, security_stamp, name_is_placeholder FROM users WHERE status != %d AND ", enum.UserDeleted)
 	err := trx.Get(&user, sql+filter, args...)
 	if err != nil {
 		return nil, err

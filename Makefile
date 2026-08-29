@@ -122,7 +122,7 @@ watch-ui: ## Build and run server in watch mode
 lint: lint-server lint-ui ## Lint server and ui
 
 lint-server: ## Lint server code
-	golangci-lint run --timeout 3m
+	golangci-lint run ./app/... . --timeout 3m
 
 lint-ui: ## Lint ui code
 	npx eslint .

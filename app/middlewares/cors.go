@@ -27,7 +27,7 @@ func WidgetCORS() web.MiddlewareFunc {
 		return func(c *web.Context) error {
 			c.Response.Header().Set("Access-Control-Allow-Origin", "*")
 			c.Response.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Firebase-AppCheck")
 			c.Response.Header().Set("Access-Control-Max-Age", "86400")
 
 			if c.Request.Method == http.MethodOptions {
@@ -53,7 +53,7 @@ func MobileApiCORS() web.MiddlewareFunc {
 		return func(c *web.Context) error {
 			if c.Value(app.MobileApiCtxKey) != nil {
 				c.Response.Header().Set("Access-Control-Allow-Origin", "*")
-				c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				c.Response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Firebase-AppCheck")
 			}
 			return next(c)
 		}

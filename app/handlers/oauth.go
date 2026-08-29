@@ -264,7 +264,7 @@ func OAuthToken() web.HandlerFunc {
 			return c.Redirect("/not-invited")
 		}
 
-		user, err = RegisterUserByProvider(c, c.Tenant(), user, provider, oauthUser.Result.ID, oauthUser.Result.Name, oauthUser.Result.Email)
+		user, err = RegisterUserByProvider(c, c.Tenant(), user, provider, oauthUser.Result.ID, oauthUser.Result.Name, oauthUser.Result.Email, false)
 		if err != nil {
 			return c.Failure(err)
 		}
